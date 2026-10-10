@@ -332,6 +332,20 @@ class SelectionChecker:
         self.sessions.clear()
 
 
+def discover_roots(store, sorts):
+    """Page type-indexed discovery independently of proof-check attempts."""
+    roots = set()
+    for sort in sorts:
+        after = None
+        while True:
+            page = store.query(kind='rewrite', semantics=SEMANTICS, result=sort,
+                               after=after, limit=1024)
+            roots.update(page)
+            if len(page) < 1024: break
+            after = page[-1]
+    return roots
+
+
 def main():
     a = argparse.ArgumentParser(); a.add_argument('--compiler', type=Path, required=True)
     a.add_argument('--core', type=Path, required=True); a.add_argument('--snapshot', type=Path, required=True)
@@ -364,8 +378,7 @@ def main():
             elif isinstance(v,list):
                 for x in v:walk(x)
         walk(subject)
-        roots=set()
-        for sort in sorts.values():roots.update(store.query(kind='rewrite',semantics=SEMANTICS,result=sort,limit=min(1024,max(1,args.budget))))
+        roots = discover_roots(store, sorts.values())
         if __package__:
             from .definition_context import applicable_roots
         else:

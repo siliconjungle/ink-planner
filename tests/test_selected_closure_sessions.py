@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from ink_planner.semantic_search import SelectionChecker, search, discovery_objects
+from ink_planner.semantic_search import SelectionChecker, search, discovery_objects, discover_roots
 
 class Store:
     def __init__(self): self.offered=[]
@@ -11,6 +11,19 @@ class Store:
         return {'roots':list(roots),'objects':{}}
 
 class SelectedClosureSessions(unittest.TestCase):
+    def test_discovery_pages_are_independent_of_small_proof_budget(self):
+        ids = [f'{i:064x}' for i in range(1100)]
+        class Paged:
+            def __init__(self): self.requests=[]
+            def query(self, **kwargs):
+                self.requests.append(kwargs)
+                start=0 if kwargs['after'] is None else ids.index(kwargs['after'])+1
+                return ids[start:start+kwargs['limit']]
+        store=Paged()
+        self.assertEqual(discover_roots(store, [{'Value':'U32'}]), set(ids))
+        self.assertEqual([r['limit'] for r in store.requests], [1024,1024])
+        self.assertEqual(store.requests[1]['after'], ids[1023])
+
     def test_discovery_does_not_construct_one_limited_authority_bundle(self):
         class ManyObjects:
             def object(self,ident):return {'dependencies': ['shared'] if ident!='shared' else []}
