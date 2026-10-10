@@ -161,7 +161,6 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12):
                         updated = dict(bodies); updated[name] = replace(body, path, new)
                         fingerprint = key(updated)
                         if fingerprint in seen: continue
-                        seen.add(fingerprint)
                         if checked >= budget: exhausted = True; break
                         step = dict(function=name, path=list(path), law=ident, arguments=dict(sorted(args.items())),
                                     premises=['Normalize'] * len(law['conditions']))
@@ -174,6 +173,8 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12):
                             if alternatives == step['premises'] or checked >= budget: continue
                             step = dict(step, premises=alternatives); proposal = applications + [step]; checked += 1
                             if not check(proposal): rejected += 1; continue
+                        # A failed proof must not hide another proof for the same result.
+                        seen.add(fingerprint)
                         score = sum(cost(t) for t in updated.values())
                         state = (score, updated, proposal)
                         candidates.append(state)
@@ -193,7 +194,9 @@ def main():
     a.add_argument('--core', type=Path, required=True); a.add_argument('--snapshot', type=Path, required=True)
     a.add_argument('--knowledge-root', type=Path)
     a.add_argument('-o', type=Path, required=True); a.add_argument('--budget', type=int, default=128)
+    a.add_argument('--rounds', type=int, default=12, help='maximum beam expansion rounds (0..64)')
     args = a.parse_args()
+    if not 0 <= args.rounds <= 64: a.error('rounds must be between 0 and 64')
     if not 0 <= args.budget <= 4096: a.error('budget must be between 0 and 4096')
     compiler = args.compiler.resolve(); original_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     from ink_knowledge import Store
@@ -236,7 +239,8 @@ def main():
                 response = session.stdout.readline()
                 return bool(response and json.loads(response).get('checked'))
             if not check([]): raise ValueError('compiler rejected the catalogue')
-            applications, receipt = search(subject, catalogue, check, args.budget)
+            applications, receipt = search(subject, catalogue, check, args.budget, rounds=args.rounds)
+            receipt['round_limit'] = args.rounds
             package['applications'] = applications
             if not check(applications): raise ValueError('compiler rejected final selection')
         finally:
