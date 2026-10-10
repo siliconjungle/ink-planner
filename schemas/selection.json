@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "semantics",
+    "input_core_sha256",
+    "knowledge",
+    "applications"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "semantics": {
+      "const": "ink-evidence-v1"
+    },
+    "input_core_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "knowledge": {
+      "$ref": "https://github.com/siliconjungle/ink-knowledge/schemas/view.json"
+    },
+    "applications": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "function",
+          "path",
+          "law",
+          "arguments",
+          "premises"
+        ],
+        "properties": {
+          "function": {
+            "type": "string"
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "law": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "arguments": {
+            "type": "object"
+          },
+          "premises": {
+            "type": "array"
+          }
+        }
+      }
+    }
+  }
+}
