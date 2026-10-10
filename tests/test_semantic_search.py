@@ -1,0 +1,87 @@
+import unittest
+from ink_planner.semantic_search import search
+
+
+def variable(name):
+    return {'sort': {'Value': 'U32'}, 'node': {'Free': name}}
+
+
+class SearchProofAlternatives(unittest.TestCase):
+    def test_rejected_proof_does_not_hide_valid_proof_for_same_result(self):
+        x = variable('x')
+        source = {'sort': x['sort'], 'node': {'Op': ['call:example', [x]]}}
+        pattern = {'sort': x['sort'], 'node': {'Op': ['call:example', [variable('arg')]]}}
+        base = {'params': {'arg': x['sort']}, 'from': pattern, 'to': variable('arg'), 'conditions': []}
+        rejected, valid = dict(base), dict(base)
+        rejected['conditions'] = [{'from': variable('arg'), 'to': variable('arg')}]
+        attempts = []
+        def checker(applications):
+            attempts.append(applications[-1]['law'])
+            return applications[-1]['law'] == 'valid'
+        applications, receipt = search({'functions': {'f': source}},
+            {'roots': ['rejected', 'valid'], 'objects': {'rejected': rejected, 'valid': valid}}, checker)
+        self.assertEqual(attempts, ['rejected', 'valid'])
+        self.assertEqual(applications[0]['law'], 'valid')
+        self.assertLess(receipt['selected_cost'], receipt['initial_cost'])
+
+    def test_rejection_and_budget_exhaustion_preserve_baseline(self):
+        x = variable('x')
+        source = {'sort': x['sort'], 'node': {'Op': ['call:example', [x]]}}
+        law = {'params': {'x': x['sort']}, 'from': source, 'to': x, 'conditions': []}
+        for budget in [0, 1]:
+            applications, receipt = search({'functions': {'f': source}},
+                {'roots': ['rejected'], 'objects': {'rejected': law}}, lambda _: False, budget=budget)
+            self.assertEqual(applications, [])
+            self.assertEqual(receipt['selected_cost'], receipt['initial_cost'])
+            self.assertLessEqual(receipt['attempts'], budget)
+
+    def test_round_limit_can_cover_more_than_twelve_independent_functions(self):
+        x = variable('x')
+        source = {'sort': x['sort'], 'node': {'Op': ['call:example', [x]]}}
+        law = {'params': {'x': x['sort']}, 'from': source, 'to': x, 'conditions': []}
+        subject = {'functions': {f'f{i:02}': source for i in range(15)}}
+        catalogue = {'roots': ['valid'], 'objects': {'valid': law}}
+        partial, limited = search(subject, catalogue, lambda _: True,
+                                  budget=256, width=1, rounds=12)
+        complete, receipt = search(subject, catalogue, lambda _: True,
+                                   budget=256, width=1, rounds=32)
+        self.assertEqual(len(partial), 12)
+        self.assertEqual(len(complete), 15)
+        self.assertLess(receipt['selected_cost'], limited['selected_cost'])
+        self.assertLessEqual(receipt['attempts'], 256)
+        baseline, _ = search(subject, catalogue, lambda _: True, rounds=0)
+        self.assertEqual(baseline, [])
+
+    def test_large_catalogue_checks_ranked_beam_without_starving_later_functions(self):
+        x = variable('x')
+        source = {'sort': x['sort'], 'node': {'Op': ['call:example', [x]]}}
+        cheaper = {'params': {'x': x['sort']}, 'from': source, 'to': x, 'conditions': []}
+        objects = {'best': cheaper}
+        # Numerous valid but higher-cost alternatives precede the useful law.
+        for i in range(300):
+            target = {'sort': x['sort'], 'node': {'Op': [f'other:{i}', [x]]}}
+            objects[f'other{i}'] = dict(cheaper, to=target)
+        catalogue = {'roots': list(objects)[1:] + ['best'], 'objects': objects}
+        subject = {'functions': {f'f{i:02}': source for i in range(15)}}
+        apps, receipt = search(subject, catalogue, lambda _: True,
+                               budget=64, width=1, rounds=32)
+        self.assertEqual(len(apps), 15)
+        self.assertEqual(receipt['attempts'], 15)
+        self.assertGreater(receipt['generated_proposals'], 300)
+        self.assertFalse(receipt['exhausted'])
+
+    def test_cli_rejects_round_limits_outside_the_documented_bound(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+        script = Path(__file__).resolve().parents[1] / 'plan.py'
+        for rounds in [-1, 65]:
+            p = subprocess.run([sys.executable, str(script), '--compiler', 'unused',
+                '--core', 'unused', '--snapshot', 'unused', '-o', 'unused',
+                '--rounds', str(rounds)], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 2)
+            self.assertIn('rounds must be between 0 and 64', p.stderr)
+
+
+if __name__ == '__main__':
+    unittest.main()
