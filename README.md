@@ -28,3 +28,8 @@ accepts its proof package. A rejected conditional law cannot suppress another
 valid proof reaching the same result. `tests/test_semantic_search.py` covers this
 case and preservation of the baseline on rejection/budget exhaustion. Matching,
 costs and deduplication remain untrusted; every selected step is replayed.
+
+The CLI exposes `--rounds 0..64` (default 12) independently of the unchanged
+`--budget 0..4096` proof-check bound. Larger modules may need more than twelve
+independent rewrites; `--rounds 32` permits those while retaining checked
+admission and the baseline fallback. The receipt records `round_limit`.

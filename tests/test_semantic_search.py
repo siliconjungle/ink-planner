@@ -35,6 +35,35 @@ class SearchProofAlternatives(unittest.TestCase):
             self.assertEqual(receipt['selected_cost'], receipt['initial_cost'])
             self.assertLessEqual(receipt['attempts'], budget)
 
+    def test_round_limit_can_cover_more_than_twelve_independent_functions(self):
+        x = variable('x')
+        source = {'sort': x['sort'], 'node': {'Op': ['call:example', [x]]}}
+        law = {'params': {'x': x['sort']}, 'from': source, 'to': x, 'conditions': []}
+        subject = {'functions': {f'f{i:02}': source for i in range(15)}}
+        catalogue = {'roots': ['valid'], 'objects': {'valid': law}}
+        partial, limited = search(subject, catalogue, lambda _: True,
+                                  budget=256, width=1, rounds=12)
+        complete, receipt = search(subject, catalogue, lambda _: True,
+                                   budget=256, width=1, rounds=32)
+        self.assertEqual(len(partial), 12)
+        self.assertEqual(len(complete), 15)
+        self.assertLess(receipt['selected_cost'], limited['selected_cost'])
+        self.assertLessEqual(receipt['attempts'], 256)
+        baseline, _ = search(subject, catalogue, lambda _: True, rounds=0)
+        self.assertEqual(baseline, [])
+
+    def test_cli_rejects_round_limits_outside_the_documented_bound(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+        script = Path(__file__).resolve().parents[1] / 'plan.py'
+        for rounds in [-1, 65]:
+            p = subprocess.run([sys.executable, str(script), '--compiler', 'unused',
+                '--core', 'unused', '--snapshot', 'unused', '-o', 'unused',
+                '--rounds', str(rounds)], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 2)
+            self.assertIn('rounds must be between 0 and 64', p.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

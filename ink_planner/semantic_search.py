@@ -194,7 +194,9 @@ def main():
     a.add_argument('--core', type=Path, required=True); a.add_argument('--snapshot', type=Path, required=True)
     a.add_argument('--knowledge-root', type=Path)
     a.add_argument('-o', type=Path, required=True); a.add_argument('--budget', type=int, default=128)
+    a.add_argument('--rounds', type=int, default=12, help='maximum beam expansion rounds (0..64)')
     args = a.parse_args()
+    if not 0 <= args.rounds <= 64: a.error('rounds must be between 0 and 64')
     if not 0 <= args.budget <= 4096: a.error('budget must be between 0 and 4096')
     compiler = args.compiler.resolve(); original_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     from ink_knowledge import Store
@@ -237,7 +239,8 @@ def main():
                 response = session.stdout.readline()
                 return bool(response and json.loads(response).get('checked'))
             if not check([]): raise ValueError('compiler rejected the catalogue')
-            applications, receipt = search(subject, catalogue, check, args.budget)
+            applications, receipt = search(subject, catalogue, check, args.budget, rounds=args.rounds)
+            receipt['round_limit'] = args.rounds
             package['applications'] = applications
             if not check(applications): raise ValueError('compiler rejected final selection')
         finally:
