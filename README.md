@@ -21,3 +21,10 @@ A selection uses `ink-evidence-v1`: the exact input core ID, an authenticated pi
 `ink_planner.search` is the bounded search API; `ink_planner.source_routing.produce` is the graph API. Target packages and execution domains are opaque names to the proof checker. Physical scheduling, profiling, GPU/device operations and fallback belong to `ink-runtime` and device adapters.
 
 `research/` contains the historical scalar/collection search experiment. It is outside production discovery and is retained to reproduce regression evidence.
+
+
+Semantic search marks a resulting term state as seen only after the compiler
+accepts its proof package. A rejected conditional law cannot suppress another
+valid proof reaching the same result. `tests/test_semantic_search.py` covers this
+case and preservation of the baseline on rejection/budget exhaustion. Matching,
+costs and deduplication remain untrusted; every selected step is replayed.
