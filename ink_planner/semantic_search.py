@@ -197,7 +197,9 @@ def main():
     if not 0 <= args.budget <= 4096: a.error('budget must be between 0 and 4096')
     compiler = args.compiler.resolve(); original_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     from ink_knowledge import Store
-    store = Store(args.knowledge_root or args.snapshot.resolve().parents[1], args.snapshot)
+    snapshot = args.snapshot.resolve()
+    storage = snapshot.parent.parent if snapshot.parent.name == 'snapshots' else snapshot.parent
+    store = Store(args.knowledge_root or storage.parent, snapshot)
     with tempfile.TemporaryDirectory(prefix='ink-semantic-search-') as tmp:
         tmp = Path(tmp); subject_path = tmp / 'subject.json'; candidate = tmp / 'candidate.json'
         subprocess.run([compiler, 'emit-semantic', args.core.resolve(), '--core', '-o', subject_path], check=True, capture_output=True)
