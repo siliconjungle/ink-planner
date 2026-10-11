@@ -38,6 +38,24 @@ class Selection(unittest.TestCase):
         self.observe(self.fast,'migrate:old-bridge',1)
         selected,_=rank(Store(self.records),self.source,[self.base,self.fast],self.target,self.workload,{'action:query':100},self.base,migration_count=1,migration_phases={self.fast:'migrate:actual-bridge'})
         self.assertEqual(selected,self.base)
+    def test_checkpoint_restore_and_unmeasured_compile_affect_full_lifecycle(self):
+        for plan,query,checkpoint,restore in [(self.base,100,10,20),(self.fast,1,1000,2000)]:
+            for phase,cost in [('action:query',query),('checkpoint',checkpoint),('restore',restore)]:self.observe(plan,phase,cost)
+        self.assertEqual(self.choose({'action:query':1000,'checkpoint':1,'restore':1}),self.fast)
+        self.assertEqual(self.choose({'action:query':1,'checkpoint':100,'restore':10}),self.base)
+        self.assertEqual(self.choose({'action:query':1000,'compile':1}),self.base)
+        for invalid in ['','x'*129,'x y','λ']:
+            with self.assertRaises(ValueError):self.choose({invalid:1})
+
+    def test_bulk_churn_and_failed_transactions_have_independent_costs(self):
+        for phase,base,fast in [('initialise',10,500),('action:batch',20,100),('action:scan',100,1),('action:erase',10,30),('action:abort',5,200),('checkpoint',10,20),('restore',20,40),('compile',100,100),('check',100,200)]:
+            self.observe(self.base,phase,base);self.observe(self.fast,phase,fast)
+        profile={'initialise':1,'action:batch':100,'action:scan':100,'action:erase':100,'action:abort':10,'checkpoint':1,'restore':1,'compile':1,'check':1}
+        self.assertEqual(self.choose(profile),self.base)
+        self.assertEqual(self.choose(dict(profile,**{'action:scan':10000})),self.fast)
+        self.records=[r for r in self.records if not(r['plan']==self.fast and r['workload']['distribution']['phase']=='action:abort')]
+        self.assertEqual(self.choose(dict(profile,**{'action:scan':10000})),self.base)
+
     def test_ties_and_zero_budget_are_deterministic(self):
         for plan in [self.base,self.fast]:self.observe(plan,'action:query',100)
         self.assertEqual(self.choose({'action:query':1}),self.base)

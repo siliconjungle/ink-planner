@@ -124,3 +124,10 @@ See the distribution’s `docs/storage-bulk-incremental.md` for the checked chun
 and Boolean maintenance producers, bulk collection laws, overlapping proof admission,
 optional search-hint cache and incremental discovery index. Optimisation evidence
 remains untrusted; source-bound proof replay and measured selection are separate.
+
+Scalable table profiles use separate `action:batch`, `action:scan`,
+`action:intersection`, `action:erase` and `action:abort` phases alongside setup,
+proof checking, compilation, checkpoint and restore. The caller supplies bounded
+counts and exact workload cohorts. A batch sample is not a scalar-update sample
+multiplied by input length: duplicates, overlap and rollback can change its cost.
+These existing generic lifecycle phases need no compiler-specific pricing rule.
