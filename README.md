@@ -119,3 +119,8 @@ provide scripts or executable commands. See the distribution's
 `docs/state-choice.md` and knowledge's `research/implementation-candidates`
 publication for usage and trust limits. Representation-only selection retains
 its explicit checked direct-bridge interface.
+
+See the distribution’s `docs/storage-bulk-incremental.md` for the checked chunk/index
+and Boolean maintenance producers, bulk collection laws, overlapping proof admission,
+optional search-hint cache and incremental discovery index. Optimisation evidence
+remains untrusted; source-bound proof replay and measured selection are separate.

@@ -6,6 +6,7 @@ cost and optional measured-memory constraints are included before switching.
 """
 import argparse,hashlib,json,subprocess,tempfile
 from fractions import Fraction
+from ink_knowledge.store import MAX_VIEW_BYTES
 from pathlib import Path
 from .route_selection import read
 
@@ -60,7 +61,7 @@ def main():
     p.add_argument('--max-candidates',type=int,default=16);p.add_argument('--check-timeout-seconds',type=int,default=30)
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
     p.add_argument('-o','--output',type=Path,required=True);a=p.parse_args()
-    if not 0<=a.max_candidates<=32 or not 1<=a.check_timeout_seconds<=60:raise ValueError('selection budget')
+    if not 0<=a.max_candidates<=32 or not 1<=a.check_timeout_seconds<=300:raise ValueError('selection budget')
     candidates=json.loads(read(a.candidates,1_000_000))
     if not isinstance(candidates,list) or len(candidates)>32:raise ValueError('candidate index budget')
     entries=[dict(request=str(a.baseline.resolve()))]
@@ -72,7 +73,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ink-representation-selection-") as temporary:
         for i,entry in enumerate(entries):
             try:
-                raw=read(Path(entry['request']),16_000_000);request=json.loads(raw)
+                raw=read(Path(entry['request']),MAX_VIEW_BYTES);request=json.loads(raw)
                 staged=Path(temporary)/f'{i}.json';staged.write_bytes(raw)
                 result=subprocess.run([str(a.compiler.resolve()),'check-representation',str(a.source.resolve()),str(staged)],capture_output=True,text=True,timeout=a.check_timeout_seconds)
                 if result.returncode:raise ValueError(result.stderr[:500])
@@ -82,7 +83,7 @@ def main():
                 bridge_raw=None
                 if i and a.migration_count and receipt['representation']!=checked[0]['plan']:
                     if 'bridge' not in entry:raise ValueError('migration requires a checked bridge')
-                    bridge_raw=read(Path(entry['bridge']),16_000_000)
+                    bridge_raw=read(Path(entry['bridge']),MAX_VIEW_BYTES)
                     staged_bridge=Path(temporary)/f'{i}.bridge.json';staged_bridge.write_bytes(bridge_raw)
                     migration=subprocess.run([str(a.compiler.resolve()),'check-migration',str(a.source.resolve()),str(Path(temporary)/'0.json'),str(staged),str(staged_bridge)],capture_output=True,text=True,timeout=a.check_timeout_seconds)
                     if migration.returncode:raise ValueError(migration.stderr[:500])

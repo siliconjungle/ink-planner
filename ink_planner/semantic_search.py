@@ -367,8 +367,11 @@ class SelectionChecker:
     def __init__(self, compiler, core, store, directory):
         self.compiler, self.core, self.store, self.directory = compiler, core, store, directory
         self.sessions = {}
+        self.incremental_sessions = set()
         self.checked_roots = set()
         self.session_attempts = 0
+        self.admission_batches = 0
+        self.newly_admitted = 0
         self.rejected_closures = 0
 
     @staticmethod
@@ -380,25 +383,62 @@ class SelectionChecker:
 
     def check(self, applications):
         roots = tuple(selection_roots(applications))
+        # A successfully admitted superset can check a smaller proposal too.
+        # Every proposal is rechecked against the original module in the child.
+        available = next((k for k in self.sessions if set(roots) <= set(k)), None)
+        if available is not None:
+            roots_key = available
+        else:
+            roots_key = roots
         if roots not in self.sessions:
-            if len(self.sessions) >= 8:
-                first = next(iter(self.sessions))
-                self.close_session(self.sessions.pop(first))
-            path = self.directory / ('closure-' + hashlib.sha256(key(roots).encode()).hexdigest() + '.json')
-            try: path.write_text(json.dumps(self.store.bundle(roots)))
-            except ValueError:
-                self.rejected_closures += 1
-                return False
-            self.session_attempts += 1
-            session = subprocess.Popen([self.compiler, 'selection-session', self.core, path],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            ready = session.stdout.readline()
-            if not ready or not json.loads(ready).get('ready'):
-                self.close_session(session)
-                self.rejected_closures += 1
-                return False
-            self.sessions[roots] = session
-        session = self.sessions[roots]
+            if available is not None:
+                session = self.sessions.pop(available)
+                self.sessions[available] = session
+            else:
+                try: bundle = self.store.bundle(roots)
+                except ValueError:
+                    self.rejected_closures += 1
+                    return False
+                candidates = [k for k,s in self.sessions.items() if s in self.incremental_sessions]
+                extended = False
+                if candidates:
+                    prior = max(candidates, key=lambda k: len(set(k) & set(roots)))
+                    session = self.sessions[prior]
+                    session.stdin.write(json.dumps({'admit': bundle}) + '\n'); session.stdin.flush()
+                    response = session.stdout.readline()
+                    result = json.loads(response) if response else {}
+                    if result.get('admitted'):
+                        self.admission_batches += 1
+                        self.newly_admitted += result.get('added', 0)
+                        roots_key = tuple(sorted(set(prior) | set(roots)))
+                        del self.sessions[prior]
+                        self.sessions[roots_key] = session
+                        extended = True
+                    elif result.get('error') != 'knowledge view schema/size limit':
+                        self.rejected_closures += 1
+                        return False
+                    # A full union does not make a separately bounded closure invalid.
+                if not extended:
+                    if len(self.sessions) >= 8:
+                        first = next(iter(self.sessions))
+                        discarded = self.sessions.pop(first)
+                        self.incremental_sessions.discard(discarded)
+                        self.close_session(discarded)
+                    path = self.directory / ('closure-' + hashlib.sha256(key(roots).encode()).hexdigest() + '.json')
+                    path.write_text(json.dumps(bundle))
+                    self.session_attempts += 1
+                    session = subprocess.Popen([self.compiler, 'selection-session', self.core, path],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    ready = session.stdout.readline()
+                    capability = json.loads(ready) if ready else {}
+                    if not capability.get('ready'):
+                        self.close_session(session)
+                        self.rejected_closures += 1
+                        return False
+                    self.sessions[roots] = session
+                    if capability.get('incremental'): self.incremental_sessions.add(session)
+        session = self.sessions.pop(roots_key)
+        self.sessions[roots_key] = session
         session.stdin.write(json.dumps(applications) + '\n'); session.stdin.flush()
         response = session.stdout.readline()
         checked = bool(response and json.loads(response).get('checked'))
@@ -408,6 +448,7 @@ class SelectionChecker:
     def close(self):
         for session in self.sessions.values(): self.close_session(session)
         self.sessions.clear()
+        self.incremental_sessions.clear()
 
 
 def discover_roots(store, sorts):
@@ -432,6 +473,8 @@ def main():
     a.add_argument('--cost-model',type=Path,help='Untrusted JSON operation prices; default structural estimate when omitted')
     a.add_argument('--compact-output',action='store_true',help='Write the selected proof closure without JSON indentation')
     a.add_argument('--rounds',type=int,default=12,help='maximum beam expansion rounds (0..64)')
+    a.add_argument('--cache-dir',type=Path,help='bounded search-hint cache; every hit is proof-checked again')
+    a.add_argument('--cache-context',type=Path,help='additional exact target/toolchain/workload/profile bytes in the cache key')
     args = a.parse_args()
     if not 0 <= args.rounds <= 64: a.error('rounds must be between 0 and 64')
     operation_costs=load_cost_model(args.cost_model) if args.cost_model else None
@@ -445,6 +488,33 @@ def main():
     snapshot = args.snapshot.resolve()
     storage = snapshot.parent.parent if snapshot.parent.name == 'snapshots' else snapshot.parent
     store = Store(args.knowledge_root or storage.parent, snapshot)
+    cache_key=None
+    source_snapshot=store.snapshot
+    if args.cache_dir:
+        from ink_planner import plan_cache
+        cache_key=plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context)
+        cached=plan_cache.load(args.cache_dir,cache_key)
+        if cached is not None:
+            envelope=json.loads(cached)
+            if not isinstance(envelope,dict) or envelope.get('schema')!=1 or envelope.get('key')!=cache_key or envelope.get('source_snapshot')!=source_snapshot or not isinstance(envelope.get('package'),dict):
+                cached=None
+            else:
+                # Specialisation can produce a derived immutable snapshot. The
+                # base pin binds cache reuse; the package remains an untrusted
+                # search result, including its complete derived proof closure.
+                cached=json.dumps(envelope['package'],separators=(',',':')).encode()
+        if cached is not None:
+            with tempfile.TemporaryDirectory(prefix='ink-plan-replay-') as temporary:
+                path=Path(temporary)/'candidate.json';path.write_bytes(cached)
+                replay=subprocess.run([compiler,'check-selection',args.core.resolve(),path],capture_output=True,text=True)
+                if replay.returncode==0:
+                    if hashlib.sha256(compiler.read_bytes()).hexdigest()!=original_hash:raise ValueError('compiler changed during cache replay')
+                    if plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context)!=cache_key:raise ValueError('compilation inputs changed during cache replay')
+                    args.o.parent.mkdir(parents=True,exist_ok=True)
+                    package=json.loads(cached)
+                    args.o.write_text(json.dumps(package,separators=(',',':'))+'\n' if args.compact_output else json.dumps(package,indent=2)+'\n')
+                    print(json.dumps(dict(compiler_sha256=original_hash,cost_model=cost_model_receipt,cache=dict(key=cache_key,hit=True,authority='fresh local proof replay',evidence=json.loads(replay.stdout)))))
+                    return
     with tempfile.TemporaryDirectory(prefix='ink-semantic-search-') as tmp:
         tmp = Path(tmp); subject_path = tmp / 'subject.json'; candidate = tmp / 'candidate.json'
         subprocess.run([compiler, 'emit-semantic', args.core.resolve(), '--core', '-o', subject_path], check=True, capture_output=True)
@@ -489,7 +559,7 @@ def main():
             applications, receipt = search(subject, catalogue, check, args.budget,
                 operation_costs=operation_costs, rounds=args.rounds, core_program=core_program)
             receipt['round_limit'] = args.rounds
-            receipt['checker_sessions'] = dict(attempts=checker.session_attempts, rejected_closures=checker.rejected_closures, checked_roots=sorted(checker.checked_roots))
+            receipt['checker_sessions'] = dict(attempts=checker.session_attempts, admission_batches=checker.admission_batches, newly_admitted=checker.newly_admitted, rejected_closures=checker.rejected_closures, checked_roots=sorted(checker.checked_roots))
             receipt['admission'] = 'each proposed application list and final output checked with its exact selected-law/premise dependency closure; unused discovery objects are not mathematical authority'
             package['applications'] = applications
             if not check(applications): raise ValueError('compiler rejected final selection')
@@ -500,5 +570,8 @@ def main():
         package['knowledge'] = store.bundle(selection_roots(applications))
         args.o.parent.mkdir(parents=True, exist_ok=True); args.o.write_text(json.dumps(package, separators=(',',':')) + '\n' if args.compact_output else json.dumps(package, indent=2) + '\n')
     if hashlib.sha256(compiler.read_bytes()).hexdigest() != original_hash: raise ValueError('compiler changed during search')
+    if cache_key:
+        if plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context)!=cache_key:raise ValueError('compilation inputs changed during search')
+        plan_cache.save(args.cache_dir,cache_key,json.dumps(dict(schema=1,key=cache_key,source_snapshot=source_snapshot,package=package),separators=(',',':')).encode()+b'\n')
     print(json.dumps(dict(compiler_sha256=original_hash, database=dict(snapshot_sha256=store.snapshot_id,source_snapshot_sha256=original_snapshot_id,entries=len(roots),loaded_objects=len(discovery),producers=producer_receipts), cost_model=cost_model_receipt, **receipt)))
 if __name__ == '__main__': main()
