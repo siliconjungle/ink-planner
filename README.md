@@ -33,3 +33,43 @@ The CLI exposes `--rounds 0..64` (default 12) independently of the unchanged
 `--budget 0..4096` proof-check bound. Larger modules may need more than twelve
 independent rewrites; `--rounds 32` permits those while retaining checked
 admission and the baseline fallback. The receipt records `round_limit`.
+
+## Measured physical representation selection
+
+`ink-select-representation` (or `select_representation.py`) checks a baseline and
+a bounded candidate index with the actual Ink compiler, then ranks comparable
+measurements of a supplied lifecycle profile. Candidate indices contain request
+paths and optional bridge paths, resolved relative to the index file. Maximum
+candidates is 32; per-check timeout is bounded to 60 seconds. Checker inputs are
+staged from the exact bytes later written to the selection output.
+
+```sh
+python3 planner/select_representation.py --compiler target/debug/ink \
+  --source examples/point-query-delta.ink \
+  --baseline knowledge/research/point-delta/refresh.json \
+  --candidates reports/incremental-maintenance-selection/candidates.json \
+  --knowledge-root knowledge \
+  --target reports/incremental-maintenance-selection/target.json \
+  --workload reports/incremental-maintenance-selection/workload.json \
+  --profile reports/incremental-maintenance-selection/profile.json \
+  --migration-count 1 -o build/selected-representation.json
+```
+
+Profile keys are initialise, teardown, check, compile and action:NAME, with
+nonnegative integer counts. Missing required phases exclude alternatives; missing
+comparable baseline phases retain the checked baseline. Exact rational pooled
+medians determine weighted costs, with ties retaining the baseline. Migration
+requires a checked bridge and charges its measured cost. Phase observations retain
+the supplied workload shape/distribution/concurrency/residency and exact target
+provenance. Distribution becomes `{workload: ORIGINAL, phase: PHASE}`.
+
+The measurement plan ID is SHA256 of the exact request file, binding witness
+and closure costs. Migration phases use `migrate:BASELINE_REQUEST_SHA:BRIDGE_SHA`.
+`--memory-limit BYTES` constrains the maximum measured peak across required
+regions; unknown memory is not zero. An infeasible baseline memory constraint
+fails explicitly. Measurements do not guarantee a future process memory limit.
+
+The output is the exact frozen checked request, plus a checked bridge when switching
+and a `.selection.json` receipt containing hashes, evidence IDs and weighted costs.
+Emit/execute commands replay through the checker. This is explicit external
+selection; there is no live adaptation or performance authority in the core.
