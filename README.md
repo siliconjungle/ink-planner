@@ -125,6 +125,17 @@ and Boolean maintenance producers, bulk collection laws, overlapping proof admis
 optional search-hint cache and incremental discovery index. Optimisation evidence
 remains untrusted; source-bound proof replay and measured selection are separate.
 
+Without an explicit `--candidates` file, implementation selection now discovers
+source-bound database packages and automatically proposes checked indexed and
+grouped alternatives through knowledge's generic producer. `--no-proposals`
+limits selection to published candidates. Explicit pools retain their previous
+behavior. Producer subprocesses are bounded; failed proposals are reported and
+leave the baseline available. Recipe caching binds source, exact compiler,
+producer code/data and budgets; checker admission is repeated on every selection.
+The existing lifecycle ranker and backend/workload observations decide whether
+batching is profitable. Missing evidence retains the baseline. Reproduce cold
+proposal, grouped/indexed/baseline selection and exact replay with the distribution
+integration test `tests/automatic_candidates_integration.py` and its fixture.
 Scalable table profiles use separate `action:batch`, `action:scan`,
 `action:intersection`, `action:erase` and `action:abort` phases alongside setup,
 proof checking, compilation, checkpoint and restore. The caller supplies bounded

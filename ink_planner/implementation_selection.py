@@ -1,7 +1,7 @@
 """Select database implementations using existing checking/lowering protocols.
 
-No algorithm names, source-pattern recognisers or executable catalogue commands.
-The baseline is a supplied database ID, with the same checks as every candidate.
+Offline producers propose source-bound implementations with ordinary proofs.
+The baseline and every candidate use the same checker and measured ranker.
 """
 import argparse, hashlib, json, subprocess, tempfile
 from pathlib import Path
@@ -27,8 +27,9 @@ def invoke(compiler, args, timeout=30):
     return r.stdout
 
 def candidate_package(store, candidate):
-    # Authenticate the candidate first; shared proof roots are exported once below.
-    # Expanding the candidate closure here duplicates the large checked view.
+    # Authenticate this wrapper's membership and bytes. Its embedded complete
+    # proof view is independently checked by check_package; fetching the same
+    # mathematical closure a second time adds no admission evidence.
     obj = store.object(candidate)
     if (obj['kind'] != 'implementation' or obj['semantics'] != SEMANTICS
             or set(obj['payload']) != {'package'}):
@@ -85,15 +86,17 @@ def main():
     p.add_argument('-o', '--output', type=Path, required=True)
     p.add_argument('--replay', type=Path, help='recheck a selected package and its pinned database receipt before emission')
     p.add_argument('--baseline', help='database entry ID')
+    p.add_argument('--no-proposals', action='store_true', help='use already published packages only')
     for name in ('candidates', 'target', 'workload', 'profile'):
         p.add_argument('--'+name, type=Path)
     p.add_argument('--max-candidates', type=int, default=16)
-    p.add_argument('--check-timeout-seconds', type=int, default=30)
+    p.add_argument('--check-timeout-seconds', type=int, default=120)
+    p.add_argument('--proposal-timeout-seconds', type=int, default=300)
     p.add_argument('--migration-count', type=int, default=0)
     p.add_argument('--memory-limit', type=int)
     p.add_argument('--zig', type=Path)
     a = p.parse_args(); compiler = a.compiler.resolve(); source_path = a.source.resolve()
-    if not 0 <= a.max_candidates <= 32 or not 1 <= a.check_timeout_seconds <= 300:
+    if not 0 <= a.max_candidates <= 32 or not 1 <= a.check_timeout_seconds <= 600 or not 1<=a.proposal_timeout_seconds<=600:
         raise ValueError('selection budget')
     compiler_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix='ink-implementation-selection-') as temporary:
@@ -119,11 +122,24 @@ def main():
             invoke(compiler, args, 600)
             print(json.dumps(dict(status='checked', selected=receipt['selected'], emission_target=a.emit_target)))
             return
-        if not a.baseline or any(getattr(a, name) is None for name in ('candidates', 'target', 'workload', 'profile')):
-            p.error('selection requires baseline, candidates, target, workload and profile')
-        store = Store(a.knowledge_root); hash_id(a.baseline)
-        candidates = json.loads(read(a.candidates, 1_000_000))
-        if not isinstance(candidates, list) or len(candidates) > 32:
+        if any(getattr(a, name) is None for name in ('target', 'workload', 'profile')):
+            p.error('selection requires target, workload and profile')
+        proposals=[];proposed=[]
+        if not a.no_proposals and a.candidates is None:
+            from .automatic_candidates import propose
+            store,baseline,proposed,proposals=propose(compiler,source_path,source,a.knowledge_root,invoke,check_package,core,a.check_timeout_seconds,a.proposal_timeout_seconds)
+            a.baseline=a.baseline or baseline
+        else:store=Store(a.knowledge_root)
+        if not a.baseline:p.error('published-only selection requires a baseline')
+        hash_id(a.baseline)
+        if a.candidates:candidates=json.loads(read(a.candidates, 1_000_000))
+        else:
+            from .automatic_candidates import discover
+            candidates=discover(store,source)
+        if not isinstance(candidates, list) or any(not isinstance(c,str) for c in candidates):
+            raise ValueError('candidate list must contain implementation IDs')
+        candidates=list(dict.fromkeys([*proposed,*candidates]));candidates=[c for c in candidates if c!=a.baseline]
+        if len(candidates) > 32:
             raise ValueError('candidate index budget')
         for candidate in candidates: hash_id(candidate)
         checked = []; rejected = []
@@ -152,6 +168,7 @@ def main():
             measurement=selected, baseline_measurement=checked[0]['measurement'], profile=profile, target=target,
             workload=workload, migration_count=a.migration_count, memory_limit=a.memory_limit, costs=costs,
             checked=len(checked), rejected=rejected, remaining=max(0, len(candidates)-a.max_candidates),
+            proposals=proposals,
             scope='external measured selection of database packages; portable checkpoint/restore migration')
         a.output.parent.mkdir(parents=True, exist_ok=True); a.output.write_bytes(raw)
         Path(str(a.output)+'.selection.json').write_text(json.dumps(receipt, indent=2)+'\n')
