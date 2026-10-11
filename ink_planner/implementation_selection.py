@@ -6,7 +6,7 @@ The baseline and every candidate use the same checker and measured ranker.
 import argparse, hashlib, json, subprocess, tempfile
 from pathlib import Path
 from ink_knowledge import Store, canonical, identity
-from ink_knowledge.store import hash_id
+from ink_knowledge.store import hash_id, MAX_VIEW_BYTES
 from ink_knowledge.implementation_candidates import SEMANTICS
 from .route_selection import read
 from .representation_selection import rank, phase_workload
@@ -36,7 +36,17 @@ def candidate_package(store, candidate):
         raise ValueError('not an implementation package entry')
     package = obj['payload']['package']
     if not isinstance(package, dict): raise ValueError('invalid package')
-    if obj['dependencies'] != sorted(set(package['knowledge']['roots'])):
+    if 'knowledge_ref' in package:
+        ref=package['knowledge_ref']
+        if ('knowledge' in package or not isinstance(ref,dict) or set(ref)!={'schema','roots'}
+                or type(ref['schema']) is not int or ref['schema']!=1
+                or not isinstance(ref['roots'],list) or any(not isinstance(r,str)for r in ref['roots']) or ref['roots']!=sorted(set(ref['roots']))):
+            raise ValueError('invalid shared knowledge reference')
+        for root in ref['roots']:hash_id(root)
+        if obj['dependencies']!=ref['roots']:raise ValueError('candidate dependency roots mismatch')
+        package={k:v for k,v in package.items()if k!='knowledge_ref'}
+        package['knowledge']=store.bundle(ref['roots'])
+    elif obj['dependencies'] != sorted(set(package['knowledge']['roots'])):
         raise ValueError('candidate dependency roots mismatch')
     return package
 
@@ -93,7 +103,7 @@ def main():
         scratch = Path(temporary); core = scratch/'core.json'
         source = json.loads(invoke(compiler, ['emit-core', source_path, '-o', core], a.check_timeout_seconds))['core_sha256']
         if a.replay:
-            raw = read(a.replay, 64_000_000)
+            raw = read(a.replay, MAX_VIEW_BYTES)
             receipt = json.loads(read(Path(str(a.replay)+'.selection.json'), 1_000_000))
             if (receipt.get('schema') != 1 or receipt.get('semantics') != 'ink-implementation-selection-v1'
                     or receipt.get('source') != source or receipt.get('compiler_sha256') != compiler_hash
