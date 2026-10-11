@@ -10,6 +10,11 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
+if __package__:
+    from .target_costs import TargetCostModel
+else:
+    from target_costs import TargetCostModel
+
 SEMANTICS = 'ink-conditional-laws-v1'
 
 
@@ -168,7 +173,7 @@ def condition_proof(goal, catalogue, depth=0):
     return 'Normalize'
 
 
-def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_costs=None):
+def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_costs=None, core_program=None):
     objects = catalogue['objects']
     # Index on the typed root constructor. New operation combinations require
     # data entries, never a new matching case. Root-variable laws are universal.
@@ -183,7 +188,14 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
             root = (key(pattern['sort']), '*')
         else: root = shape(pattern)
         index.setdefault(root, []).append(ident)
-    start = subject['functions']; initial = sum(cost(t, operation_costs) for t in start.values())
+    component_model = operation_costs if isinstance(operation_costs, TargetCostModel) else None
+    if component_model is not None and core_program is None:
+        raise ValueError('schema2 requires actual core parameter signatures')
+    def score_bodies(bodies):
+        if component_model is not None:
+            return component_model.estimate_module(bodies, core_program)['score_ns']
+        return sum(cost(t, operation_costs) for t in bodies.values())
+    start = subject['functions']; initial = score_bodies(start)
     frontier = [(initial, start, [])]; best = frontier[0]; seen = {key(start)}
     rejected = 0; checked = 0; exhausted = False
     generated = 0
@@ -209,7 +221,7 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
                         proposal_key = key(proposal)
                         if proposal_key in pending_seen: continue
                         pending_seen.add(proposal_key)
-                        score = sum(cost(t, operation_costs) for t in updated.values())
+                        score = score_bodies(updated)
                         pending.append((score, updated, proposal, fingerprint, law, args))
         # Rank untrusted proposals before spending bounded checker work. Only
         # the best `width` admitted bodies can enter the next beam; checking
@@ -240,13 +252,20 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
             if len(candidates) >= width: break
         if not candidates or exhausted: break
         frontier = candidates
-    return best[2], dict(initial_cost=initial, selected_cost=best[0], attempts=checked,
-                         rejected=rejected, generated_proposals=generated, exhausted=exhausted, estimate='structural; not measured runtime')
+    receipt = dict(initial_cost=initial, selected_cost=best[0], attempts=checked,
+                   rejected=rejected, generated_proposals=generated, exhausted=exhausted, estimate='structural; not measured runtime')
+    if component_model is not None:
+        receipt['estimate'] = 'schema2 untrusted source component hypothesis in ns; not measured runtime or physical GPU cost'
+        receipt['initial_components'] = component_model.estimate_module(start, core_program)
+        receipt['selected_components'] = component_model.estimate_module(best[1], core_program)
+    return best[2], receipt
 
 
 def load_cost_model(path):
     """Untrusted operation prices guide search, never applicability or replay."""
     model=json.loads(Path(path).read_text())
+    if isinstance(model, dict) and type(model.get('schema')) is int and model['schema'] == 2:
+        return TargetCostModel(model)
     if not isinstance(model,dict) or set(model)!={'schema','operation_costs'} or type(model['schema']) is not int or model['schema']!=1:
         raise ValueError('invalid cost model schema')
     prices=model['operation_costs']
@@ -357,7 +376,9 @@ def main():
     args = a.parse_args()
     if not 0 <= args.rounds <= 64: a.error('rounds must be between 0 and 64')
     operation_costs=load_cost_model(args.cost_model) if args.cost_model else None
-    cost_model_receipt=None if args.cost_model is None else dict(path=str(args.cost_model.resolve()),sha256=hashlib.sha256(args.cost_model.read_bytes()).hexdigest(),operation_costs=operation_costs,scope='Untrusted compile-time search hypothesis, not measured runtime')
+    cost_model_receipt=None if args.cost_model is None else dict(path=str(args.cost_model.resolve()),sha256=hashlib.sha256(args.cost_model.read_bytes()).hexdigest(),scope='Untrusted compile-time search hypothesis, not measured runtime')
+    if cost_model_receipt is not None:
+        cost_model_receipt['model' if isinstance(operation_costs, TargetCostModel) else 'operation_costs'] = operation_costs.describe() if isinstance(operation_costs, TargetCostModel) else operation_costs
     if not 0 <= args.budget <= 4096: a.error('budget must be between 0 and 4096')
     compiler = args.compiler.resolve(); original_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     from ink_knowledge import Store
@@ -398,7 +419,7 @@ def main():
         try:
             if not check([]): raise ValueError('compiler rejected the unchanged input')
             applications, receipt = search(subject, catalogue, check, args.budget,
-                operation_costs=operation_costs, rounds=args.rounds)
+                operation_costs=operation_costs, rounds=args.rounds, core_program=core_program)
             receipt['round_limit'] = args.rounds
             receipt['checker_sessions'] = dict(attempts=checker.session_attempts, rejected_closures=checker.rejected_closures, checked_roots=sorted(checker.checked_roots))
             receipt['admission'] = 'each proposed application list and final output checked with its exact selected-law/premise dependency closure; unused discovery objects are not mathematical authority'

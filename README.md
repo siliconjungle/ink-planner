@@ -46,3 +46,7 @@ selected closure.
 Proposal costs are ranked before bounded checker work. Search checks only enough admitted alternatives to fill the next beam; rejected proofs do not suppress other proofs of the same body. Generated proposals and checked attempts are reported separately.
 
 Type-indexed discovery pages through snapshot candidates independently of the rewrite-check budget. The budget bounds proof attempts, not the subset of law IDs that can be discovered.
+
+Optional target component models and their source/physical boundaries are documented
+in [docs-target-components.md](docs-target-components.md). Schema1 pricing and default
+structural ranking remain unchanged.

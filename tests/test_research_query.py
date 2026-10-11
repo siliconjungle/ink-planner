@@ -4,8 +4,8 @@ import sys
 import unittest
 from pathlib import Path
 
-import os
-ROOT=Path(os.environ.get('INK_KNOWLEDGE_ROOT',Path(__file__).resolve().parents[2]/'knowledge'))/'research'
+# Immutable bounded objects keep accumulated archived research irrelevant.
+ROOT=Path(__file__).resolve().parent/'fixtures/research-query'
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'research'))
 from database_query import Database, scalar_endpoint
 from rewrite_search import search, Unsupported
@@ -22,6 +22,7 @@ class Exhaustive:
 class QueryTests(unittest.TestCase):
     def test_discrimination_preserves_exhaustive_search_results_and_proofs(self):
         database = Database(ROOT)
+        self.assertEqual(len(database.query.rules), 8)
         rng = random.Random(0x1A4B)
         env = {'x': ('U64', {'Var': 'p0'}), 'y': ('U64', {'Var': 'p1'}),
                'a': ('Bool', {'Var': 'p2'}), 'b': ('Bool', {'Var': 'p3'})}

@@ -1,0 +1,200 @@
+"""Source costs remain untrusted; actual signatures/binders drive estimates."""
+import copy
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'planner'))
+from ink_planner.target_costs import COMPONENTS, TargetCostModel
+from ink_planner.semantic_search import load_cost_model, search
+
+U = {'Value': 'U32'}
+B = {'Value': 'Bool'}
+L = {'Value': {'List': 'U32'}}
+
+def term(sort, node): return dict(sort=sort, node=node)
+def free(name, sort=U): return term(sort, {'Free': name})
+def bound(n=0, sort=U): return term(sort, {'Bound': n})
+def word(n): return term(U, {'Word': n})
+def op(name, *args, sort=U): return term(sort, {'Op': [name, list(args)]})
+def lam(body, argument=U): return term({'Arrow': [argument, body['sort']]}, {'Lambda': body})
+def mapped(xs, body): return op('method:map', xs, lam(body), sort=L)
+def signature(name, params, result='U32'): return dict(name=name, params=params, result=result)
+def program(*functions): return dict(functions=list(functions))
+def model(**changes):
+    data = dict(schema=2, target='javascript', boundary='owned',
+                cardinality=dict(default=10, by_parameter={'xs': 7, 'ys': 3}),
+                weights={k: (1 if k == 'unknown_work' else 0) for k in COMPONENTS})
+    data.update(changes)
+    return TargetCostModel(data)
+
+class TargetComponentTests(unittest.TestCase):
+    def test_schema_finite_prices_and_cardinality_types(self):
+        data = model().describe()
+        data.pop('scope'); data.pop('units')
+        data['weights']['scalar_ops'] = .125
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'model.json'; p.write_text(json.dumps(data))
+            self.assertIsInstance(load_cost_model(p), TargetCostModel)
+            for invalid in (True, -1, float('nan'), float('inf'), 10**10):
+                bad = copy.deepcopy(data); bad['weights']['scalar_ops'] = invalid
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError): TargetCostModel(bad)
+            for n in (True, 1.5, -1, 10**10):
+                bad = copy.deepcopy(data); bad['cardinality']['default'] = n
+                with self.assertRaises(ValueError): TargetCostModel(bad)
+            bad = copy.deepcopy(data); bad['weights']['unknown_work'] = 0
+            with self.assertRaises(ValueError): TargetCostModel(bad)
+            bad = copy.deepcopy(data); bad['trusted'] = True
+            with self.assertRaises(ValueError): TargetCostModel(bad)
+
+    def test_signature_parameter_names_and_current_argument_binding(self):
+        bodies = {'helper': mapped(free('source', L), op('binary:+', bound(), word(1))),
+                  'entry': op('call:helper', free('ys', L), sort=L)}
+        p = program(signature('helper', [['source', {'List': 'U32'}]], {'List': 'U32'}),
+                    signature('entry', [['xs', {'List': 'U32'}], ['ys', {'List': 'U32'}]], {'List': 'U32'}))
+        r = model().estimate_function('entry', bodies, p)
+        self.assertEqual(r['components']['traversal_elements'], 3)
+        self.assertEqual(r['components']['scalar_ops'], 3)
+        self.assertEqual(len(r['definitions_consumed']), 2)
+        bodies['entry'] = op('call:helper', free('xs', L), sort=L)
+        self.assertEqual(model().estimate_function('entry', bodies, p)['components']['traversal_elements'], 7)
+
+    def test_current_helper_rewrites_change_caller_vector_and_binding(self):
+        p = program(signature('helper', [['x', 'U32']]), signature('entry', [['xs', {'List': 'U32'}]], {'List': 'U32'}))
+        bodies = {'entry': mapped(free('xs', L), op('call:helper', bound())),
+                  'helper': op('binary:+', free('x'), word(1))}
+        before = model().estimate_function('entry', bodies, p)
+        bodies['helper'] = op('binary:+', op('binary:*', free('x'), word(2)), word(1))
+        after = model().estimate_function('entry', bodies, p)
+        self.assertEqual(before['components']['scalar_ops'], 7)
+        self.assertEqual(after['components']['scalar_ops'], 14)
+        self.assertEqual(before['components']['loop_body_pressure'], 7)
+        self.assertEqual(after['components']['loop_body_pressure'], 28)
+        self.assertNotEqual(before['definitions_consumed'], after['definitions_consumed'])
+
+    def test_shared_let_materializes_once_and_shadowing_captures(self):
+        initial = mapped(free('xs', L), op('binary:+', bound(), word(1)))
+        body = op('call:sum', bound(0, L))
+        body = op('binary:+', body, op('call:sum', bound(0, L)))
+        shared = op('apply', lam(body, L), initial)
+        unshared = op('binary:+', op('call:sum', initial), op('call:sum', initial))
+        p = program(signature('entry', [['xs', {'List': 'U32'}]]))
+        a = model().estimate_function('entry', {'entry': shared}, p)['components']
+        b = model().estimate_function('entry', {'entry': unshared}, p)['components']
+        self.assertEqual(a['allocation_events'], 1); self.assertEqual(b['allocation_events'], 2)
+        self.assertEqual(a['traversal_elements'], 21); self.assertEqual(b['traversal_elements'], 28)
+        # Inner map binder shadows the let: Bound1 accesses captured scalar once
+        # per iteration, without replaying the expression that initialized it.
+        nested = op('apply', lam(mapped(free('xs', L), op('binary:+', bound(), bound(1)))),
+                    op('binary:*', word(2), word(3)), sort=L)
+        p = program(signature('entry', [['xs', {'List': 'U32'}]], {'List': 'U32'}))
+        self.assertEqual(model().estimate_function('entry', {'entry': nested}, p)['components']['scalar_ops'], 8)
+
+    def test_branches_max_not_sum_and_known_branch_shortcircuits(self):
+        a = mapped(free('xs', L), op('binary:+', bound(), word(1)))
+        b = mapped(free('ys', L), op('binary:*', bound(), word(2)))
+        p = program(signature('entry', [['xs', {'List': 'U32'}], ['ys', {'List': 'U32'}], ['gate', 'Bool']], {'List': 'U32'}))
+        r = model().estimate_function('entry', {'entry': op('call:choose', free('gate', B), a, b, sort=L)}, p)
+        self.assertEqual(r['components']['traversal_elements'], 7)
+        self.assertEqual(r['components']['allocation_events'], 1)
+        r = model().estimate_function('entry', {'entry': op('call:choose', term(B, {'Bool': False}), a, b, sort=L)}, p)
+        self.assertEqual(r['components']['traversal_elements'], 3)
+
+    def test_zip_min_filter_upper_concat_empty(self):
+        zipper = lam(lam(op('binary:-', bound(1), bound())))
+        xs, ys = free('xs', L), free('ys', L)
+        zipped = op('method:zip', xs, ys, zipper, sort=L)
+        p = program(signature('entry', [['xs', {'List': 'U32'}], ['ys', {'List': 'U32'}]], {'List': 'U32'}))
+        r = model().estimate_function('entry', {'entry': zipped}, p)
+        self.assertEqual(r['components']['traversal_elements'], 3)
+        self.assertEqual(r['components']['allocation_bytes'], 12)
+        nil = term(L, 'Nil')
+        concat = op('method:concat', nil, xs, sort=L)
+        r = model().estimate_function('entry', {'entry': concat}, p)
+        self.assertEqual(r['components']['copy_bytes'], 28)
+        filtered = op('method:filter', xs, lam(op('binary:<', bound(), word(4), sort=B)), sort=L)
+        r = model().estimate_function('entry', {'entry': op('method:zip', filtered, ys, zipper, sort=L)}, p)
+        self.assertEqual(r['components']['traversal_elements'], 10)
+        self.assertTrue(any('upper bound' in a for a in r['assumptions']))
+
+    def test_recursive_unknown_callback_capture_and_deep_fallback(self):
+        p = program(signature('entry', [['xs', {'List': 'U32'}]], {'List': 'U32'}))
+        cases = [op('call:entry', free('xs', L), sort=L),
+                 mapped(free('xs', L), free('missing_capture')),
+                 op('method:map', free('xs', L), free('f', {'Arrow': [U, U]}), sort=L)]
+        deep = word(0)
+        for _ in range(3000): deep = op('binary:+', deep, word(1))
+        cases.append(deep)
+        for body in cases:
+            with self.subTest(case=body['node'].keys()):
+                r = model().estimate_function('entry', {'entry': body}, p)
+                self.assertFalse(r['complete']); self.assertGreater(r['components']['unknown_work'], 0)
+                self.assertTrue(r['unknown_reasons'])
+
+    def test_nested_collection_capture_is_priced_in_callback(self):
+        cb = op('binary:+', bound(), op('call:sum', free('ys', L)))
+        p = program(signature('entry', [['xs', {'List': 'U32'}], ['ys', {'List': 'U32'}]], {'List': 'U32'}))
+        r = model().estimate_function('entry', {'entry': mapped(free('xs', L), cb)}, p)
+        self.assertEqual(r['components']['traversal_elements'], 7 + 7*3)
+        self.assertEqual(r['components']['scalar_ops'], 7*4)
+
+    def test_gpu_vectors_disclose_physical_unknown_and_boundaries(self):
+        p = program(signature('entry', [['xs', {'List': 'U32'}], ['ys', {'List': 'U32'}]], {'List': 'U32'}))
+        body = op('method:scan', free('xs', L), sort=L)
+        r = model(target='webgpu', boundary='gpu_upload_readback').estimate_function('entry', {'entry': body}, p)
+        c = r['components']
+        self.assertEqual(c['gpu_dispatches'], 1)
+        self.assertEqual(c['upload_bytes'], 40); self.assertEqual(c['readback_bytes'], 28)
+        self.assertFalse(r['complete']); self.assertGreater(c['unknown_work'], 0)
+        self.assertTrue(any('physical lowering' in a for a in r['unknown_reasons']))
+        r = model(target='webgpu', boundary='gpu_resident').estimate_function('entry', {'entry': body}, p)
+        self.assertEqual(r['components']['upload_bytes'], 0); self.assertEqual(r['components']['readback_bytes'], 0)
+
+    def test_boundary_alias_owned_copy_and_invocation(self):
+        p = program(signature('entry', [['xs', {'List': 'U32'}]], {'List': 'U32'}))
+        r = model().estimate_function('entry', {'entry': free('xs', L)}, p)
+        self.assertEqual(r['components']['allocation_events'], 1)
+        self.assertEqual(r['components']['copy_bytes'], 28)
+        self.assertEqual(r['components']['invocations'], 1)
+        r = model(boundary='into').estimate_function('entry', {'entry': free('xs', L)}, p)
+        # Into must copy a borrowed return into its destination too.
+        self.assertEqual(r['components']['copy_bytes'], 28)
+        self.assertEqual(r['components']['allocation_events'], 0)
+
+    def test_schema2_search_receipts_checker_and_schema1_unchanged(self):
+        a = op('call:quot_or', free('x'), word(2), word(0))
+        b = op('binary:+', free('x'), word(1))
+        law = dict(params={'x': U}, conditions=[], **{'from': a, 'to': b})
+        subject = {'functions': {'entry': a}}; catalogue = {'roots': ['law'], 'objects': {'law': law}}
+        p = program(signature('entry', [['x', 'U32']]))
+        weights = model().weights.copy(); weights['div_rem'] = 8.5; weights['scalar_ops'] = .5
+        m = model(weights=weights)
+        with self.assertRaises(ValueError): search(subject, catalogue, lambda _: True, operation_costs=m)
+        apps, r = search(subject, catalogue, lambda _: False, operation_costs=m, core_program=p)
+        self.assertEqual(apps, []); self.assertEqual(r['initial_components'], r['selected_components'])
+        apps, r = search(subject, catalogue, lambda _: True, operation_costs=m, core_program=p)
+        self.assertEqual([a['law'] for a in apps], ['law'])
+        self.assertEqual(r['initial_components']['components']['div_rem'], 1)
+        self.assertEqual(r['selected_components']['components']['div_rem'], 0)
+        old = search(subject, catalogue, lambda _: True, operation_costs={'call:quot_or': 100, 'binary:+': 0})[1]
+        self.assertNotIn('initial_components', old)
+        self.assertEqual(old['estimate'], 'structural; not measured runtime')
+
+    def test_optional_pressure_retains_staged_proven_alternative(self):
+        xs = free('xs', L)
+        staged = mapped(mapped(xs, op('binary:+', bound(), word(1))), op('binary:*', bound(), word(2)))
+        fused = mapped(xs, op('binary:*', op('binary:+', bound(), word(1)), word(2)))
+        law = dict(params={'xs': L}, conditions=[], **{'from': staged, 'to': fused})
+        p = program(signature('entry', [['xs', {'List': 'U32'}]], {'List': 'U32'}))
+        weights = model().weights.copy(); weights['loop_body_pressure'] = 1
+        apps, r = search({'functions': {'entry': staged}}, {'roots': ['law'], 'objects': {'law': law}},
+                         lambda _: True, operation_costs=model(weights=weights), core_program=p)
+        self.assertEqual(apps, []); self.assertEqual(r['initial_components']['components']['loop_body_pressure'], 14)
+        weights['loop_body_pressure'] = 0; weights['allocation_events'] = 1
+        apps, r = search({'functions': {'entry': staged}}, {'roots': ['law'], 'objects': {'law': law}},
+                         lambda _: True, operation_costs=model(weights=weights), core_program=p)
+        self.assertEqual(len(apps), 1); self.assertEqual(r['selected_components']['components']['allocation_events'], 1)
+
+if __name__ == '__main__': unittest.main()
