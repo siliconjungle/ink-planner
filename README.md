@@ -101,3 +101,26 @@ search defaults come from knowledge's `structural-costs.json` and are unmeasured
 hypotheses, never evidence of speed or correctness.
 
 Optional offline emitted-work ranking over already checked alternatives is described in [docs-physical-features.md](docs-physical-features.md). It leaves the default semantic search unchanged and retains the baseline for missing/incomparable target evidence.
+
+## Database implementation candidates
+
+`ink-select-implementation` (`select_implementation.py`) compares supplied
+canonical implementation entry IDs through the existing selection and physical
+representation proof protocols. An ordinary program can be published as an empty
+selection package and has the same checks as other candidates. The compiler
+contains no source-versus-cache selector. All seven lanes bind separate measurement
+identities to the candidate and exact compiler; lifecycle frequencies, setup,
+portable migration and measured memory enter external ranking. Missing comparable
+evidence retains the supplied baseline, which can itself be any admitted candidate.
+
+`--replay selected.json` authenticates the recorded database snapshot/package,
+rechecks proofs and invokes existing lowering commands. Catalogue entries cannot
+provide scripts or executable commands. See the distribution's
+`docs/state-choice.md` and knowledge's `research/implementation-candidates`
+publication for usage and trust limits. Representation-only selection retains
+its explicit checked direct-bridge interface.
+
+See the distribution’s `docs/storage-bulk-incremental.md` for the checked chunk/index
+and Boolean maintenance producers, bulk collection laws, overlapping proof admission,
+optional search-hint cache and incremental discovery index. Optimisation evidence
+remains untrusted; source-bound proof replay and measured selection are separate.
