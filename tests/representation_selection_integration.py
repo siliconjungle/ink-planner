@@ -23,13 +23,13 @@ with tempfile.TemporaryDirectory(prefix='ink-selection-integration-') as tempora
         paths[name]=root/(name+'.json');paths[name].write_text(json.dumps(value))
     output=root/'selected.json'
     def run(*extra):
-        command=[sys.executable,'planner/select_representation.py','--compiler',str(compiler),'--source',str(source),'--baseline',str(baseline),'--knowledge-root',str(store.root),'-o',str(output)]
+        command=[sys.executable,'planner/select_representation.py','--compiler',str(compiler),'--source',str(source),'--baseline',str(baseline),'--check-timeout-seconds','60','--knowledge-root',str(store.root),'-o',str(output)]
         for name,path in paths.items():command+=['--'+name,str(path)]
         r=subprocess.run(command+list(extra),capture_output=True,text=True);assert r.returncode==0,r.stderr
         receipt=json.loads(r.stdout);assert receipt['request_sha256']==hashlib.sha256(output.read_bytes()).hexdigest()
         checked=subprocess.run([str(compiler),'check-representation',str(source),str(output)],capture_output=True,text=True);assert checked.returncode==0,checked.stderr
         return receipt
-    selected=run('--migration-count','1');assert output.read_bytes()==alternative.read_bytes();assert len(selected['rejected'])==1
+    selected=run('--migration-count','1');assert output.read_bytes()==alternative.read_bytes(),selected;assert len(selected['rejected'])==1,selected
     assert Path(selected['bridge']).read_bytes()==(fixture/'forward.json').read_bytes()
     paths['profile'].write_text(json.dumps({'initialise':1,'action:zero':1}));run();assert output.read_bytes()==baseline.read_bytes()
     paths['profile'].write_text(json.dumps({'action:zero':100}));run('--max-candidates','0');assert output.read_bytes()==baseline.read_bytes()

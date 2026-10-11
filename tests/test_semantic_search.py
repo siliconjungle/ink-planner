@@ -7,6 +7,26 @@ def variable(name):
 
 
 class SearchProofAlternatives(unittest.TestCase):
+    def test_diverse_beam_retains_a_more_expensive_route_to_no_materialisation(self):
+        x=variable('x'); seq={'sort':{'Value':{'List':'U32'}},'node':{'Free':'xs'}}
+        op=lambda name,args:dict(sort=x['sort'],node={'Op':[name,args]})
+        source=op('call:start',[x,seq])
+        mapped=dict(sort=seq['sort'],node={'Op':['method:map',[seq,dict(sort={'Arrow':[x['sort'],x['sort']]},node={'Lambda':dict(sort=x['sort'],node={'Bound':0})})]]})
+        base=dict(params={'x':x['sort'],'xs':seq['sort']},conditions=[],**{'from':source})
+        objects={f'cheap{i}':dict(base,to=op(f'call:temptation{i}',[mapped])) for i in range(2)}
+        barrier=op('call:barrier',[x])
+        objects['barrier']=dict(base,to=barrier)
+        objects['finish']=dict(params={'x':x['sort']},conditions=[],**{'from':barrier,'to':x})
+        costs={'call:start':1000,'call:barrier':500,'call:temptation0':0,'call:temptation1':0,'method:map':1}
+        args=({'functions':{'f':source}},{'roots':list(objects),'objects':objects},lambda _:True)
+        ordinary,old=search(*args,width=2,rounds=2,operation_costs=costs,diverse=False)
+        selected,new=search(*args,width=2,rounds=2,operation_costs=costs)
+        self.assertEqual([a['law'] for a in selected],['barrier','finish'])
+        self.assertLess(new['selected_cost'],old['selected_cost'])
+        self.assertEqual(new['beam_diversity']['selected']['allocation_events'],0)
+        # Rejecting that route must still preserve only checked alternatives.
+        rejected,_=search(*args[:2],lambda apps:all(a['law']!='barrier' for a in apps),width=2,rounds=2,operation_costs=costs)
+        self.assertNotIn('barrier',[a['law'] for a in rejected])
     def test_rejected_proof_does_not_hide_valid_proof_for_same_result(self):
         x = variable('x')
         source = {'sort': x['sort'], 'node': {'Op': ['call:example', [x]]}}
