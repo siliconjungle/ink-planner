@@ -52,6 +52,24 @@ class SearchProofAlternatives(unittest.TestCase):
         baseline, _ = search(subject, catalogue, lambda _: True, rounds=0)
         self.assertEqual(baseline, [])
 
+    def test_large_catalogue_checks_ranked_beam_without_starving_later_functions(self):
+        x = variable('x')
+        source = {'sort': x['sort'], 'node': {'Op': ['call:example', [x]]}}
+        cheaper = {'params': {'x': x['sort']}, 'from': source, 'to': x, 'conditions': []}
+        objects = {'best': cheaper}
+        # Numerous valid but higher-cost alternatives precede the useful law.
+        for i in range(300):
+            target = {'sort': x['sort'], 'node': {'Op': [f'other:{i}', [x]]}}
+            objects[f'other{i}'] = dict(cheaper, to=target)
+        catalogue = {'roots': list(objects)[1:] + ['best'], 'objects': objects}
+        subject = {'functions': {f'f{i:02}': source for i in range(15)}}
+        apps, receipt = search(subject, catalogue, lambda _: True,
+                               budget=64, width=1, rounds=32)
+        self.assertEqual(len(apps), 15)
+        self.assertEqual(receipt['attempts'], 15)
+        self.assertGreater(receipt['generated_proposals'], 300)
+        self.assertFalse(receipt['exhausted'])
+
     def test_cli_rejects_round_limits_outside_the_documented_bound(self):
         import subprocess
         import sys

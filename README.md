@@ -73,3 +73,16 @@ The output is the exact frozen checked request, plus a checked bridge when switc
 and a `.selection.json` receipt containing hashes, evidence IDs and weighted costs.
 Emit/execute commands replay through the checker. This is explicit external
 selection; there is no live adaptation or performance authority in the core.
+
+Discovery objects are untrusted search inputs. The planner validates each proposal
+and final result with the exact selected rewrite/premise dependency closure,
+using at most eight cached checker sessions. Unused discovery laws do not consume
+a shared admission budget and are omitted from final proof authority. Every
+chosen law is still checked; an invalid or over-budget closure rejects the
+proposal. Discovery counts and checked roots are recorded separately.
+`--compact-output` controls JSON formatting; both output forms contain only the
+selected closure.
+
+Proposal costs are ranked before bounded checker work. Search checks only enough admitted alternatives to fill the next beam; rejected proofs do not suppress other proofs of the same body. Generated proposals and checked attempts are reported separately.
+
+Type-indexed discovery pages through snapshot candidates independently of the rewrite-check budget. The budget bounds proof attempts, not the subset of law IDs that can be discovered.
