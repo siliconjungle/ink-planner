@@ -13,7 +13,7 @@ def phase_workload(workload,phase):
     return dict(workload,distribution=dict(workload=workload['distribution'],phase=phase))
 
 def rank(store,program,plans,target,workload,counts,baseline,migration_count=0,memory_limit=None,migration_phases=None):
-    if not isinstance(counts,dict) or not 1<=len(counts)<=64 or any(not isinstance(k,str) or not (k in ('initialise','teardown','check','compile') or k.startswith('action:') and len(k)>7) or type(v) is not int or not 0<=v<=1_000_000_000 for k,v in counts.items()):
+    if not isinstance(counts,dict) or not 1<=len(counts)<=64 or any(not isinstance(k,str) or not (1<=len(k)<=128 and k.isascii() and all(c.isalnum() or c in ':_-.' for c in k)) or type(v) is not int or not 0<=v<=1_000_000_000 for k,v in counts.items()):
         raise ValueError('invalid bounded lifecycle profile')
     if type(migration_count) is not int or not 0<=migration_count<=1_000_000:raise ValueError('invalid migration count')
     if memory_limit is not None and (type(memory_limit) is not int or memory_limit<0):raise ValueError('invalid memory limit')
