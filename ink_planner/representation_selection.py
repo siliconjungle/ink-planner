@@ -104,6 +104,6 @@ def main():
     bridge_path=None
     if chosen['bridge'] is not None:
         bridge_path=str(a.output)+'.bridge.json';Path(bridge_path).write_bytes(chosen['bridge'])
-    receipt=dict(schema=1,status='checked',selected=chosen['plan'],request_sha256=hashlib.sha256(chosen['raw']).hexdigest(),source=chosen['source'],snapshot=store.snapshot_id,profile=profile,target=target,workload=workload,migration_count=a.migration_count,bridge=bridge_path,memory_limit=a.memory_limit,checked=len(checked),rejected=rejected,remaining=max(0,len(candidates)-a.max_candidates),costs=costs,scope='external measured lifecycle selection; replay rechecks request and bridge; no live adaptation')
+    receipt=dict(schema=1,status='checked',selected=chosen['plan'],request_sha256=hashlib.sha256(chosen['raw']).hexdigest(),source=chosen['source'],snapshot=store.snapshot_id,profile=profile,target=target,workload=workload,migration_count=a.migration_count,bridge=bridge_path,bridge_sha256=(hashlib.sha256(chosen['bridge']).hexdigest() if chosen['bridge'] is not None else None),memory_limit=a.memory_limit,checked=len(checked),rejected=rejected,remaining=max(0,len(candidates)-a.max_candidates),costs=costs,scope='external measured lifecycle selection; replay rechecks request and bridge; no live adaptation')
     Path(str(a.output)+'.selection.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt))
 if __name__=='__main__':main()
