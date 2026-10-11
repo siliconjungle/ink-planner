@@ -78,3 +78,30 @@ for line in sys.stdin:print(json.dumps({'checked':True}),flush=True)
             self.assertEqual(checker.sessions,{})
 
 if __name__=='__main__':unittest.main()
+
+class IncrementalClosureSessions(unittest.TestCase):
+    def test_overlap_reuse_failed_admission_and_capacity_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);compiler=root/'checker.py'
+            compiler.write_text('''#!/usr/bin/env python3
+import json,sys
+roots=set(json.load(open(sys.argv[3]))['roots'])
+print(json.dumps({'ready':True,'incremental':True}),flush=True)
+for line in sys.stdin:
+    request=json.loads(line)
+    if isinstance(request,dict):
+        incoming=set(request['admit']['roots'])
+        error='bad proof' if 'invalid' in incoming else 'knowledge view schema/size limit' if len(roots|incoming)>3 else None
+        if error:print(json.dumps({'admitted':False,'error':error}),flush=True)
+        else:
+            added=len(incoming-roots);roots|=incoming;print(json.dumps({'admitted':True,'added':added}),flush=True)
+    else:print(json.dumps({'checked':all(a['law'] in roots for a in request)}),flush=True)
+''');compiler.chmod(0o755)
+            checker=SelectionChecker(compiler,root/'core',Store(),root)
+            try:
+                for law in ['a','b','c']:self.assertTrue(checker.check([{'law':law}]))
+                self.assertEqual(checker.session_attempts,1);self.assertEqual(checker.admission_batches,2)
+                self.assertFalse(checker.check([{'law':'invalid'}]));self.assertTrue(checker.check([{'law':'a'}]))
+                self.assertTrue(checker.check([{'law':'d'}]));self.assertEqual(checker.session_attempts,2)
+                self.assertTrue(checker.check([{'law':'b'}]))
+            finally:checker.close()

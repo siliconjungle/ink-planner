@@ -101,3 +101,8 @@ search defaults come from knowledge's `structural-costs.json` and are unmeasured
 hypotheses, never evidence of speed or correctness.
 
 Optional offline emitted-work ranking over already checked alternatives is described in [docs-physical-features.md](docs-physical-features.md). It leaves the default semantic search unchanged and retains the baseline for missing/incomparable target evidence.
+
+See the distribution’s `docs/storage-bulk-incremental.md` for the checked chunk/index
+and Boolean maintenance producers, bulk collection laws, overlapping proof admission,
+optional search-hint cache and incremental discovery index. Optimisation evidence
+remains untrusted; source-bound proof replay and measured selection are separate.
