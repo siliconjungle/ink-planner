@@ -193,7 +193,7 @@ def condition_proof(goal, catalogue, depth=0):
     return 'Normalize'
 
 
-def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_costs=None, core_program=None):
+def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_costs=None, core_program=None, diverse=True):
     objects = catalogue['objects']
     # Index on the typed root constructor. New operation combinations require
     # data entries, never a new matching case. Root-variable laws are universal.
@@ -215,6 +215,30 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
         if component_model is not None:
             return component_model.estimate_module(bodies, core_program)['score_ns']
         return sum(cost(t, operation_costs) for t in bodies.values())
+    from ink_knowledge.cost_models import structural_components
+    dimensions = ('allocation_events', 'traversal_elements', 'copy_bytes')
+    component_prices = structural_components()
+    profile_cache = {}
+    def profile(bodies):
+        fingerprint = key(bodies)
+        if fingerprint not in profile_cache:
+            if component_model is not None:
+                profile_cache[fingerprint] = component_model.estimate_module(bodies, core_program)['components']
+            else:
+                result = dict.fromkeys(dimensions, 0)
+                for body in bodies.values():
+                    for _, t in positions(body):
+                        node = t['node']
+                        name = node['Op'][0] if isinstance(node, dict) and 'Op' in node else next(iter(node)) if isinstance(node, dict) else node
+                        for dimension in dimensions:
+                            result[dimension] += component_prices.get(dimension, {}).get(name, 0)
+                profile_cache[fingerprint] = result
+            # Cache is disposable; deterministic bounds do not consume proof budget.
+            if len(profile_cache) > 4096:
+                result = profile_cache[fingerprint]
+                profile_cache.clear()
+                profile_cache[fingerprint] = result
+        return profile_cache[fingerprint]
     start = subject['functions']; initial = score_bodies(start)
     frontier = [(initial, start, [])]; best = frontier[0]; seen = {key(start)}
     rejected = 0; checked = 0; exhausted = False
@@ -249,6 +273,18 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
         # A rejection never marks a body seen or hides another proof of it.
         generated += len(pending)
         pending.sort(key=lambda x: (x[0], len(x[2]), key(x[1])))
+        if diverse and pending and width > 1:
+            # Keep the cheapest proposal, then minima of different work profiles.
+            # Never pretend repeated expressions are shared: each executed source
+            # occurrence is counted. Only explicit source bindings supply sharing.
+            preferred = [pending[0]]
+            used = {pending[0][3]}
+            for dimension in dimensions:
+                winner = min(pending, key=lambda x: (profile(x[1]).get(dimension, 0), x[0], len(x[2]), x[3]))
+                if winner[3] not in used and len(preferred) < width:
+                    preferred.append(winner)
+                    used.add(winner[3])
+            pending = preferred + [x for x in pending if x not in preferred]
         candidates = []
         for score, updated, proposal, fingerprint, law, args in pending:
             if fingerprint in seen: continue
@@ -274,6 +310,8 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
         frontier = candidates
     receipt = dict(initial_cost=initial, selected_cost=best[0], attempts=checked,
                    rejected=rejected, generated_proposals=generated, exhausted=exhausted, estimate='structural; not measured runtime')
+    receipt['beam_diversity'] = dict(enabled=diverse, dimensions=list(dimensions),
+        initial=profile(start), selected=profile(best[1]), scope='Untrusted source-work hypotheses; no timing or proof authority')
     if component_model is not None:
         receipt['estimate'] = 'schema2 untrusted source component hypothesis in ns; not measured runtime or physical GPU cost'
         receipt['initial_components'] = component_model.estimate_module(start, core_program)
