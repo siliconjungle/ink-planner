@@ -27,7 +27,10 @@ def invoke(compiler, args, timeout=30):
     return r.stdout
 
 def candidate_package(store, candidate):
-    obj = store.bundle([candidate])['objects'][candidate]
+    # Authenticate this wrapper's membership and bytes. Its embedded complete
+    # proof view is independently checked by check_package; fetching the same
+    # mathematical closure a second time adds no admission evidence.
+    obj = store.object(candidate)
     if (obj['kind'] != 'implementation' or obj['semantics'] != SEMANTICS
             or set(obj['payload']) != {'package'}):
         raise ValueError('not an implementation package entry')
