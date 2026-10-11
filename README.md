@@ -101,3 +101,10 @@ search defaults come from knowledge's `structural-costs.json` and are unmeasured
 hypotheses, never evidence of speed or correctness.
 
 Optional offline emitted-work ranking over already checked alternatives is described in [docs-physical-features.md](docs-physical-features.md). It leaves the default semantic search unchanged and retains the baseline for missing/incomparable target evidence.
+
+Scalable table profiles use separate `action:batch`, `action:scan`,
+`action:intersection`, `action:erase` and `action:abort` phases alongside setup,
+proof checking, compilation, checkpoint and restore. The caller supplies bounded
+counts and exact workload cohorts. A batch sample is not a scalar-update sample
+multiplied by input length: duplicates, overlap and rollback can change its cost.
+These existing generic lifecycle phases need no compiler-specific pricing rule.
