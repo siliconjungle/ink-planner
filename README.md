@@ -99,3 +99,5 @@ never extrapolate or run training probes. Fitted models retain their observation
 IDs in knowledge's `store/cost-models`, outside mathematical admission. Structural
 search defaults come from knowledge's `structural-costs.json` and are unmeasured
 hypotheses, never evidence of speed or correctness.
+
+Optional offline emitted-work ranking over already checked alternatives is described in [docs-physical-features.md](docs-physical-features.md). It leaves the default semantic search unchanged and retains the baseline for missing/incomparable target evidence.
