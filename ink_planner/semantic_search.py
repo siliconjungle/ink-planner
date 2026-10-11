@@ -35,15 +35,28 @@ def set_child(t, i, child):
     return t
 
 
-def shift(t, amount, cutoff=0):
-    t = copy.deepcopy(t); n = t['node']
-    if 'Bound' in n and n['Bound'] >= cutoff:
-        n['Bound'] += amount
-        if n['Bound'] < cutoff: raise ValueError('binder capture')
+def map_children(t, transform):
+    """Rebuild once without copying siblings for every child replacement."""
+    n = t['node']
+    if isinstance(n, dict) and 'Op' in n:
+        node = {'Op': [n['Op'][0], [transform(c) for c in n['Op'][1]]]}
+    elif isinstance(n, dict) and 'Lambda' in n:
+        node = {'Lambda': transform(n['Lambda'])}
+    elif isinstance(n, dict) and 'Cons' in n:
+        node = {'Cons': [transform(c) for c in n['Cons']]}
     else:
-        for i, child in enumerate(children(t)):
-            t = set_child(t, i, shift(child, amount, cutoff + int('Lambda' in n)))
-    return t
+        return copy.deepcopy(t)
+    return dict(sort=copy.deepcopy(t['sort']), node=node)
+
+
+def shift(t, amount, cutoff=0):
+    n = t['node']
+    if isinstance(n, dict) and 'Bound' in n and n['Bound'] >= cutoff:
+        out = copy.deepcopy(t)
+        out['node']['Bound'] += amount
+        if out['node']['Bound'] < cutoff: raise ValueError('binder capture')
+        return out
+    return map_children(t, lambda child: shift(child, amount, cutoff + int('Lambda' in n)))
 
 
 def extract_hole(t, depth, local=0):
@@ -77,9 +90,7 @@ def substitute(t, args, depth=0):
     n = t['node']
     if isinstance(n, dict) and 'Free' in n and n['Free'] in args:
         return shift(args[n['Free']], depth)
-    for i, child in enumerate(children(t)):
-        t = set_child(t, i, substitute(child, args, depth + int('Lambda' in n)))
-    return t
+    return map_children(t, lambda child: substitute(child, args, depth + int('Lambda' in n)))
 
 
 def positions(t, path=()):
