@@ -91,4 +91,13 @@ Optional target component models and their source/physical boundaries are docume
 in [docs-target-components.md](docs-target-components.md). Schema1 pricing and default
 structural ranking remain unchanged.
 
+Offline cost profiles use `python -m ink_planner.cost_profiles --knowledge-root
+KNOWLEDGE --rows ROWS.json --target-key TARGET -o PROFILE.json`. Each row names an
+immutable observation and its exact compiled scope. The fitter uses explicit
+workload features, nonnegative prices and intersected observed domains; hosts
+never extrapolate or run training probes. Fitted models retain their observation
+IDs in knowledge's `store/cost-models`, outside mathematical admission. Structural
+search defaults come from knowledge's `structural-costs.json` and are unmeasured
+hypotheses, never evidence of speed or correctness.
+
 Optional offline emitted-work ranking over already checked alternatives is described in [docs-physical-features.md](docs-physical-features.md). It leaves the default semantic search unchanged and retains the baseline for missing/incomparable target evidence.

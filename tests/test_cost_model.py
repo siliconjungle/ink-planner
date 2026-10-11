@@ -32,6 +32,6 @@ class CostModelTests(unittest.TestCase):
                 path.write_text(json.dumps(model))
                 with self.subTest(model=model),self.assertRaises(ValueError):load_cost_model(path)
             path.write_text(json.dumps(dict(schema=1,operation_costs={'new:operation':0})))
-            self.assertEqual(load_cost_model(path),{'new:operation':0})
+            self.assertEqual(load_cost_model(path)['new:operation'],0)
 
 if __name__=='__main__':unittest.main()

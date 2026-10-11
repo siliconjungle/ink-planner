@@ -83,5 +83,23 @@ class SearchProofAlternatives(unittest.TestCase):
             self.assertIn('rounds must be between 0 and 64', p.stderr)
 
 
+class BinderSafeRebuilding(unittest.TestCase):
+    def test_shift_and_substitution_preserve_nested_binders_and_input(self):
+        import copy
+        from ink_planner.semantic_search import shift, substitute, extract_hole
+        x=variable('x'); bound=lambda i: dict(sort=x['sort'],node={'Bound':i})
+        body=dict(sort=x['sort'],node={'Op':['call:pair',[bound(0),bound(1),x]]})
+        tree=dict(sort={'Arrow':[x['sort'],x['sort']]},node={'Lambda':body})
+        saved=copy.deepcopy(tree)
+        result=substitute(tree,{'x':bound(0)})
+        self.assertEqual([t['node']['Bound'] for t in result['node']['Lambda']['node']['Op'][1]],[0,1,1])
+        self.assertEqual(tree,saved)
+        self.assertEqual(shift(shift(tree,1),-1),tree)
+        with self.assertRaises(ValueError): extract_hole(tree,1)
+        # Returned trees must not alias nested input containers.
+        result['sort']['Arrow'][0]['Value']='U64'
+        self.assertEqual(tree,saved)
+
+
 if __name__ == '__main__':
     unittest.main()
