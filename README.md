@@ -90,3 +90,5 @@ Type-indexed discovery pages through snapshot candidates independently of the re
 Optional target component models and their source/physical boundaries are documented
 in [docs-target-components.md](docs-target-components.md). Schema1 pricing and default
 structural ranking remain unchanged.
+
+Optional offline emitted-work ranking over already checked alternatives is described in [docs-physical-features.md](docs-physical-features.md). It leaves the default semantic search unchanged and retains the baseline for missing/incomparable target evidence.
