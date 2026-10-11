@@ -53,24 +53,46 @@ def rank(store,program,plans,target,workload,counts,baseline,migration_count=0,m
         raise ValueError('baseline cannot satisfy the measured memory constraint')
     return selected,dict(total_ns={p:str(n) for p,n in totals.items()},excluded=excluded,observations={p:sorted(set(ids)) for p,ids in evidence.items()},baseline_comparable=baseline in totals)
 
+def source_baseline(source, target, compiler):
+    """Measurement identity for the exact ordinary indexed-source emission."""
+    from ink_knowledge import canonical
+    descriptor=dict(schema=1,semantics='ink-source-baseline-v1',source=source,
+                    emission_target=target,compiler_sha256=compiler)
+    return hashlib.sha256(canonical(descriptor)).hexdigest()
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    for name in ('compiler','source','baseline','candidates','knowledge-root','target','workload','profile'):
+    for name in ('compiler','source','candidates','knowledge-root','target','workload','profile'):
         p.add_argument('--'+name,type=Path,required=True)
+    baseline=p.add_mutually_exclusive_group(required=True)
+    baseline.add_argument('--baseline',type=Path)
+    baseline.add_argument('--baseline-source',action='store_true',help='compare against ordinary compiled source, emitting a replayable state choice')
+    p.add_argument('--emit-target',choices=['rust','c','javascript','rust-wasm','c-wasm','wgpu','webgpu'])
     p.add_argument('--max-candidates',type=int,default=16);p.add_argument('--check-timeout-seconds',type=int,default=30)
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
     p.add_argument('-o','--output',type=Path,required=True);a=p.parse_args()
     if not 0<=a.max_candidates<=32 or not 1<=a.check_timeout_seconds<=60:raise ValueError('selection budget')
     candidates=json.loads(read(a.candidates,1_000_000))
     if not isinstance(candidates,list) or len(candidates)>32:raise ValueError('candidate index budget')
-    entries=[dict(request=str(a.baseline.resolve()))]
+    if a.baseline_source != (a.emit_target is not None):raise ValueError('--emit-target is required exactly with --baseline-source')
+    compiler_hash=hashlib.sha256(a.compiler.read_bytes()).hexdigest() if a.baseline_source else None
+    entries=[] if a.baseline_source else [dict(request=str(a.baseline.resolve()))]
     for candidate in candidates[:a.max_candidates]:
         if isinstance(candidate,str):candidate=dict(request=candidate)
         if not isinstance(candidate,dict) or set(candidate)-{'request','bridge'} or not isinstance(candidate.get('request'),str) or any(not isinstance(v,str) for v in candidate.values()):raise ValueError('candidate index format')
         entries.append({k:str((a.candidates.parent/v).resolve()) for k,v in candidate.items()})
     checked=[];rejected=[]
+    if a.baseline_source:
+        with tempfile.TemporaryDirectory(prefix='ink-source-baseline-') as scratch:
+            result=subprocess.run([str(a.compiler.resolve()),'emit-core',str(a.source.resolve()),'-o',str(Path(scratch)/'core.json')],capture_output=True,text=True,timeout=a.check_timeout_seconds)
+        if result.returncode:raise ValueError('source baseline checking failed: '+result.stderr[:500])
+        receipt=json.loads(result.stdout)
+        if receipt.get('status')!='checked':raise ValueError('source baseline checker receipt mismatch')
+        source=receipt['core_sha256'];measurement=source_baseline(source,a.emit_target,compiler_hash)
+        checked.append(dict(plan=measurement,measurement=measurement,source=source,raw=None,bridge=None))
     with tempfile.TemporaryDirectory(prefix="ink-representation-selection-") as temporary:
-        for i,entry in enumerate(entries):
+        for offset,entry in enumerate(entries):
+            i=offset+int(a.baseline_source)
             try:
                 raw=read(Path(entry['request']),16_000_000);request=json.loads(raw)
                 staged=Path(temporary)/f'{i}.json';staged.write_bytes(raw)
@@ -80,7 +102,8 @@ def main():
                 if receipt.get('status')!='checked' or receipt.get('representation')!=request.get('representation') or receipt.get('source')!=request.get('input_core_sha256'):raise ValueError('checker receipt mismatch')
                 if i and receipt['source']!=checked[0]['source']:raise ValueError('source mismatch')
                 bridge_raw=None
-                if i and a.migration_count and receipt['representation']!=checked[0]['plan']:
+                if a.baseline_source and 'bridge' in entry:raise ValueError('source baseline switches use portable checkpoint/restore, not a direct representation bridge')
+                if i and a.migration_count and not a.baseline_source and receipt['representation']!=checked[0]['plan']:
                     if 'bridge' not in entry:raise ValueError('migration requires a checked bridge')
                     bridge_raw=read(Path(entry['bridge']),16_000_000)
                     staged_bridge=Path(temporary)/f'{i}.bridge.json';staged_bridge.write_bytes(bridge_raw)
@@ -94,16 +117,24 @@ def main():
                 rejected.append(dict(request=entry['request'],reason=str(e)))
     from ink_knowledge import Store
     store=Store(a.knowledge_root)
-    target=json.loads(read(a.target,64000));workload=json.loads(read(a.workload,64000));profile=json.loads(read(a.profile,64000))
+    target=json.loads(read(a.target,64000))
+    if a.baseline_source and target.get('backend')!=a.emit_target:raise ValueError('measurement backend must match --emit-target exactly')
+    workload=json.loads(read(a.workload,64000));profile=json.loads(read(a.profile,64000))
     # Validate provenance using the same canonical observation contract.
     Store.validate_observation(dict(schema=1,program=checked[0]['source'],entries=[],plan=checked[0]['plan'],target=target,workload=workload,metrics=dict(complete_call_ns=['0'],peak_bytes=None)))
     migration_phases={c['measurement']:'migrate:'+checked[0]['measurement']+':'+hashlib.sha256(c['bridge']).hexdigest() for c in checked if c['bridge'] is not None}
+    if a.baseline_source:migration_phases={c['measurement']:'migrate:'+checked[0]['measurement']+':portable:'+c['measurement'] for c in checked[1:]}
     selected,costs=rank(store,checked[0]['source'],list(dict.fromkeys(c['measurement'] for c in checked)),target,workload,profile,checked[0]['measurement'],a.migration_count,a.memory_limit,migration_phases)
     chosen=next(c for c in checked if c['measurement']==selected)
-    a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_bytes(chosen['raw'])
+    if a.baseline_source:
+        implementation=dict(kind='source') if chosen['raw'] is None else dict(kind='representation',request=json.loads(chosen['raw']))
+        choice=dict(schema=1,semantics='ink-compiled-state-choice-v1',source=chosen['source'],emission_target=a.emit_target,compiler_sha256=compiler_hash,implementation=implementation)
+        output=json.dumps(choice,separators=(',',':')).encode()+b'\n'
+    else:output=chosen['raw']
+    a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_bytes(output)
     bridge_path=None
     if chosen['bridge'] is not None:
         bridge_path=str(a.output)+'.bridge.json';Path(bridge_path).write_bytes(chosen['bridge'])
-    receipt=dict(schema=1,status='checked',selected=chosen['plan'],request_sha256=hashlib.sha256(chosen['raw']).hexdigest(),source=chosen['source'],snapshot=store.snapshot_id,profile=profile,target=target,workload=workload,migration_count=a.migration_count,bridge=bridge_path,bridge_sha256=(hashlib.sha256(chosen['bridge']).hexdigest() if chosen['bridge'] is not None else None),memory_limit=a.memory_limit,checked=len(checked),rejected=rejected,remaining=max(0,len(candidates)-a.max_candidates),costs=costs,scope='external measured lifecycle selection; replay rechecks request and bridge; no live adaptation')
+    receipt=dict(schema=1,status='checked',selected=chosen['plan'],request_sha256=hashlib.sha256(output).hexdigest(),measurement=chosen['measurement'],baseline_measurement=checked[0]['measurement'],source=chosen['source'],snapshot=store.snapshot_id,profile=profile,target=target,workload=workload,migration_count=a.migration_count,bridge=bridge_path,bridge_sha256=(hashlib.sha256(chosen['bridge']).hexdigest() if chosen['bridge'] is not None else None),memory_limit=a.memory_limit,checked=len(checked),rejected=rejected,remaining=max(0,len(candidates)-a.max_candidates),costs=costs,switch_mode=('portable checkpoint/restore' if a.baseline_source else 'checked direct bridge'),scope='external measured lifecycle selection; replay rechecks request and bridge; no live adaptation')
     Path(str(a.output)+'.selection.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt))
 if __name__=='__main__':main()
