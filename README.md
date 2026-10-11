@@ -136,3 +136,9 @@ The existing lifecycle ranker and backend/workload observations decide whether
 batching is profitable. Missing evidence retains the baseline. Reproduce cold
 proposal, grouped/indexed/baseline selection and exact replay with the distribution
 integration test `tests/automatic_candidates_integration.py` and its fixture.
+Scalable table profiles use separate `action:batch`, `action:scan`,
+`action:intersection`, `action:erase` and `action:abort` phases alongside setup,
+proof checking, compilation, checkpoint and restore. The caller supplies bounded
+counts and exact workload cohorts. A batch sample is not a scalar-update sample
+multiplied by input length: duplicates, overlap and rollback can change its cost.
+These existing generic lifecycle phases need no compiler-specific pricing rule.
