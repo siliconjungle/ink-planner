@@ -111,7 +111,16 @@ def estimated_list_length(t, fallback):
 
 def cost(t, operation_costs=None):
     """Structural estimate, never runtime evidence or correctness authority."""
-    n = t['node']; costs = [cost(x, operation_costs) for x in children(t)]
+    if operation_costs is None:
+        from ink_knowledge.cost_models import structural_prices
+        operation_costs = structural_prices()
+    else:
+        from ink_knowledge.cost_models import structural_prices
+        operation_costs = dict(structural_prices(), **operation_costs)
+    return _cost(t,operation_costs)
+
+def _cost(t,operation_costs):
+    n = t['node']; costs = [_cost(x, operation_costs) for x in children(t)]
     if isinstance(n, dict) and 'Op' in n:
         name, args = n['Op']
         # A generic list callback repeats work; scalar work outside it does not.
@@ -134,17 +143,17 @@ def cost(t, operation_costs=None):
         if operation_costs is not None and name in operation_costs:
             return operation_costs[name] + sum(costs)
         if name == 'call:repeat':
-            count = args[0]['node'].get('Nat', 16)
-            return costs[1] + count * (costs[2] + 2)
+            count = args[0]['node'].get('Nat', operation_costs.get('estimate:repeat_iterations', 0))
+            return costs[1] + count * (costs[2] + operation_costs.get('estimate:repeat_step', 0))
         # Lists carry their length and support direct indexing. Computing the
         # receiver still pays its full structural cost, e.g. map/filter/concat.
         if name in ('method:at_or', 'call:count'):
-            return 1 + sum(costs)
-        if name.startswith('method:') or name in ('call:sum', 'call:count', 'call:foldr'):
-            return 40 + sum(costs)
-        if name == 'nat.word': return 0
-        if name == 'apply': return sum(costs)
-    return 1 + sum(costs)
+            return operation_costs.get(name, operation_costs.get('estimate:scalar', 0)) + sum(costs)
+        if name.startswith('method:') or name in ('call:sum', 'call:count', 'call:foldr', 'call:fold_until'):
+            return operation_costs.get('estimate:collection', 0) + sum(costs)
+        if name == 'nat.word': return operation_costs.get(name, 0)
+        if name == 'apply': return operation_costs.get(name, 0) + sum(costs)
+    return operation_costs.get('estimate:scalar', 0) + sum(costs)
 
 
 def key(v): return json.dumps(v, sort_keys=True, separators=(',', ':'))
@@ -274,7 +283,8 @@ def load_cost_model(path):
     for name,price in prices.items():
         if not isinstance(name,str) or not name or len(name)>256 or type(price) is not int or not 0<=price<=1000000:
             raise ValueError('invalid operation price')
-    return prices
+    from ink_knowledge.cost_models import structural_prices
+    return {**structural_prices(), **prices}
 
 
 def selection_roots(applications):
@@ -382,6 +392,7 @@ def main():
     if not 0 <= args.budget <= 4096: a.error('budget must be between 0 and 4096')
     compiler = args.compiler.resolve(); original_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     from ink_knowledge import Store
+    from ink_knowledge.proposals import generate
     snapshot = args.snapshot.resolve()
     storage = snapshot.parent.parent if snapshot.parent.name == 'snapshots' else snapshot.parent
     store = Store(args.knowledge_root or storage.parent, snapshot)
@@ -407,6 +418,14 @@ def main():
         core_program = json.loads(args.core.read_text())['program']
         roots = applicable_roots(store, roots, core_program, subject)
         discovery = discovery_objects(store, roots)
+        generated, producer_receipts = generate(subject, json.loads(args.core.read_text()))
+        original_snapshot_id = store.snapshot_id
+        if generated:
+            # An immutable derived catalogue transports proposals and exact
+            # dependencies. Membership remains distinct from mathematical admission.
+            discovery.update(generated)
+            store = Store.publish(tmp / 'generated-knowledge', discovery.values())
+            roots = sorted(set(roots) | set(generated))
         def law(e):return dict(schema=1,semantics=e['semantics'],dependencies=e['dependencies'],**e['payload'])
         catalogue=dict(roots=sorted(roots),objects={i:law(e) for i,e in discovery.items()})
         package = dict(schema=1, semantics='ink-evidence-v1', input_core_sha256=subject['input_core_sha256'],
@@ -432,5 +451,5 @@ def main():
         package['knowledge'] = store.bundle(selection_roots(applications))
         args.o.parent.mkdir(parents=True, exist_ok=True); args.o.write_text(json.dumps(package, separators=(',',':')) + '\n' if args.compact_output else json.dumps(package, indent=2) + '\n')
     if hashlib.sha256(compiler.read_bytes()).hexdigest() != original_hash: raise ValueError('compiler changed during search')
-    print(json.dumps(dict(compiler_sha256=original_hash, database=dict(snapshot_sha256=store.snapshot_id,entries=len(roots),loaded_objects=len(discovery)), cost_model=cost_model_receipt, **receipt)))
+    print(json.dumps(dict(compiler_sha256=original_hash, database=dict(snapshot_sha256=store.snapshot_id,source_snapshot_sha256=original_snapshot_id,entries=len(roots),loaded_objects=len(discovery),producers=producer_receipts), cost_model=cost_model_receipt, **receipt)))
 if __name__ == '__main__': main()
