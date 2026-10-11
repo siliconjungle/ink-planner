@@ -117,3 +117,10 @@ Carrier construction events are not V8 allocator calls, and JavaScript Array
 storage bytes remain unknown. Native C body-only traces are a separate cohort and
 cannot train the complete-call General40 model. Rust feature acquisition and
 actual GPU phase evidence remain required before those cohorts can be priced.
+
+Publication can additionally bind a general `--context` record. Its exact
+contents and source identity accompany each diagnostic measurement and price,
+with a separate diagnostic definition dependency. Acquisition limitations and
+poor heldout results therefore remain attached to prices rather than only in an
+external narrative. The context grants no proof, application or default-selection
+authority. Frozen model and prediction bytes remain intact.
