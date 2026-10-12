@@ -58,6 +58,21 @@ class PlanningDiagnostics(unittest.TestCase):
         self.assertEqual(result['candidates'][1]['gate'],'memory_evidence')
         self.assertTrue(result['candidates'][2]['measured'])
 
+    def test_compact_cache_does_not_claim_fresh_discovery_or_measurements(self):
+        from ink_knowledge import identity
+        packet=dict(schema=1,semantics='ink-compiled-plan-v1',input_core_sha256='a'*64,steps=[])
+        value=dict(source='a'*64,semantics=packet['semantics'],selected=identity(packet),status='checked',
+                   cache=dict(hit=True),attempts=99,admitted_states=20,
+                   measurement_acquisition=dict(acquisition=dict(rows=[dict(measurement='m')])))
+        result=diagnose(value)
+        self.assertTrue(result['delivery']['baseline_retained'])
+        self.assertIsNone(result['delivery']['admitted_candidates'])
+        self.assertIsNone(result['search']['rejected_proofs'])
+        self.assertFalse(result['fresh_work']['search'])
+        self.assertFalse(result['fresh_work']['measurements'])
+        self.assertTrue(result['fresh_work']['selected_replay_reported'])
+        self.assertIn('historical cached',result['provenance'])
+
 
 if __name__ == '__main__':
     unittest.main()
