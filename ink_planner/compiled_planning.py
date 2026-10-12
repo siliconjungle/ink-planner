@@ -28,7 +28,7 @@ def fingerprint(state):
         for fact in package['facts']:
             facts.add(identity({k:v for k,v in fact.items()if k!='proof'}))
     return identity(dict(source=state['source'],representation=(state.get('representation')or{}).get('representation'),
-        definitions=state.get('definition_choices')or{},physical=state.get('physical'),route=state.get('route'),properties=sorted(facts)))
+        definitions=state.get('definition_choices')or{},physical=state.get('physical'),route=state.get('route'),resources=state.get('resources'),properties=sorted(facts)))
 
 def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_seconds=3600,memory_bytes=512_000_000):
     """The callback boundary admits complete proof chains, never hash equality.
@@ -118,7 +118,7 @@ class Planner:
             model=None;self.notes.append(dict(source=state['source'],recipe='action-projection',status='declined',reason=str(error)))
         pool={r['representation']:r for _,s in states.values()if s['source']==state['source']and(r:=s.get('representation'))}
         context=dict(state,compiler=str(self.compiler),python=sys.executable,knowledge_root=str(self.root),model=model,
-            knowledge_snapshot=self.snapshot,representation_pool=list(pool.values()),emit_target=self.options.target,check_timeout=self.options.check_timeout,
+            usage_profile=getattr(self.options,'observed_resources',None),knowledge_snapshot=self.snapshot,representation_pool=list(pool.values()),emit_target=self.options.target,check_timeout=self.options.check_timeout,
             proposal_timeout=self.options.proposal_timeout,semantic_budget=self.options.semantic_budget,
             semantic_rounds=self.options.semantic_rounds,candidate_limit=self.options.candidate_limit)
         path=self.directory/'recipe-context.json';path.write_bytes(canonical(context)+b'\n')
@@ -130,7 +130,7 @@ class Planner:
                 continue
             output=self.directory/'recipe-output.jsonl'
             output.unlink(missing_ok=True)
-            key=identity(dict(recipe=recipe,compiler=self.compiler_hash,code=self.code_hash,snapshot=self.snapshot,target=self.options.target,
+            key=identity(dict(recipe=recipe,source=state['source'],compiler=self.compiler_hash,code=self.code_hash,snapshot=self.snapshot,target=self.options.target,
                 inputs={k:context.get(k)for k in recipe.get('inputs',context.keys())},
                 budgets={k:context.get(k)for k in ['check_timeout','proposal_timeout','semantic_budget','semantic_rounds','candidate_limit']}))
             cached=self.directory/('recipe-'+key+'.jsonl')
@@ -189,14 +189,16 @@ class Planner:
         # The structural hypothesis orders exploration only. It cannot select a
         # physically different implementation without comparable observations.
         from ink_knowledge.cost_models import structural_prices
-        prices=structural_prices();score=0;pending=[state['core']['program']]
+        prices=structural_prices();score=0
+        program=state['core']['program'];frequencies=getattr(self.options,'observed_frequencies',{})
+        pending=[(f.get('body',{}),frequencies.get(('action:' if 'kind' in f else 'call:')+f['name'],1)) for f in [*program.get('functions',[]),*program.get('actions',[])]]
         while pending:
-            v=pending.pop()
+            v,weight=pending.pop()
             if isinstance(v,dict):
-                if 'Method'in v:score+=prices.get('method:'+v['Method'][1],prices.get('estimate:collection',40))
-                if 'Call'in v:score+=prices.get('call:'+v['Call'][0],prices.get('estimate:scalar',1))
-                pending.extend(v.values())
-            elif isinstance(v,list):pending.extend(v)
+                if 'Method'in v:score+=weight*prices.get('method:'+v['Method'][1],prices.get('estimate:collection',40))
+                if 'Call'in v:score+=weight*prices.get('call:'+v['Call'][0],prices.get('estimate:scalar',1))
+                pending.extend((child,weight) for child in v.values())
+            elif isinstance(v,list):pending.extend((child,weight) for child in v)
         return score
 
 def main():
@@ -225,6 +227,12 @@ def main():
             result=subprocess.run([str(compiler),'emit-core',str(args.source),'-o',str(original)],capture_output=True,text=True,timeout=args.check_timeout)
             if result.returncode:raise ValueError(result.stderr)
         source=json.loads(subprocess.check_output([str(compiler),'check-core',str(original)],text=True,timeout=args.check_timeout))['core_sha256']
+        from ink_knowledge.usage_profiles import discover
+        usage_profiles=discover(store,source,args.target)
+        args.observed_frequencies={}
+        for profile in usage_profiles:
+            for phase,count in profile['counts'].items():args.observed_frequencies[phase]=args.observed_frequencies.get(phase,0)+count
+        args.observed_resources=dict(peak_pending=max((p['peak_pending'] for p in usage_profiles),default=0),peak_pending_bytes=max((p['peak_pending_bytes'] for p in usage_profiles),default=0)) if usage_profiles else None
         initial=dict(schema=1,semantics=SEMANTICS,input_core_sha256=source,steps=[])
         planner=Planner(compiler,original,root,directory,registry['recipes'],digest,args)
         states,receipt=explore(initial,planner.expand,planner.check,planner.priority,args.budget,args.state_limit,args.time_seconds,args.memory_bytes)
@@ -235,6 +243,11 @@ def main():
         store,candidates=publish_candidates(root,packages)
         measurements=[measurement_id(c,planner.compiler_hash,args.target)for c in candidates]
         baseline=initial;selected=baseline;selection=dict(reason='missing comparable lifecycle evidence; baseline retained')
+        if usage_profiles and not any(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
+            from .usage_selection import select
+            eligible=[m for m,(_,s)in zip(measurements,states.values())if s.get('capability',{}).get('emittable',True)]
+            chosen,selection=select(store,source,eligible,usage_profiles,measurements[0],args.memory_limit)
+            selected=packages[measurements.index(chosen)]
         if all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             profile=json.loads(args.profile.read_bytes());workload=json.loads(args.workload.read_bytes());target=json.loads(args.target_profile.read_bytes())
             if target.get('backend')!=args.target:raise ValueError('measurement backend must match emission lane')
