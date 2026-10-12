@@ -290,12 +290,14 @@ def main():
         receipt.update(dict(schema=1,semantics=SEMANTICS,status='checked',source=source,compiler_sha256=planner.compiler_hash,
             registry_sha256=digest,producer_sha256=planner.code_hash,planning_budgets=dict(effort=args.planning_effort,recipe_workers=args.recipe_workers,**{name:getattr(args,name)for name in EFFORTS['balanced']}),reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
             selection=selection,measurement_acquisition=acquisition,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
+        from .planning_diagnostics import diagnose
+        receipt['diagnostics']=diagnose(receipt)
         Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
         planner.close()
         if args.emit:
             command=[str(compiler),'emit-plan',str(original),str(args.o.resolve()),'--core','--target',args.target,'-o',str(args.emit)]
             result=subprocess.run(command,capture_output=True,text=True,timeout=args.check_timeout)
             if result.returncode:raise ValueError(result.stderr)
-        print(json.dumps({k:v for k,v in receipt.items()if k not in {'edges','rejected','recipes','candidates','coverage'}}))
+        print(json.dumps({k:v for k,v in receipt.items()if k not in {'edges','rejected','recipes','candidates','coverage','diagnostics'}}))
 
 if __name__=='__main__':main()
