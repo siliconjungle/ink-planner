@@ -8,7 +8,7 @@ import argparse, atexit, copy, hashlib, heapq, json, os, select, shutil, subproc
 from collections import deque
 from pathlib import Path
 from ink_knowledge import Store, canonical, identity
-from ink_knowledge.recipes import load, coverage
+from ink_knowledge.recipes import load, indexed_coverage
 from ink_knowledge.implementation_candidates import candidate_entry, proof_views
 from .implementation_selection import measurement_id
 from .representation_selection import rank
@@ -19,7 +19,7 @@ def code_fingerprint():
     import ink_knowledge,producers
     roots=[('knowledge',Path(ink_knowledge.__file__).parent),('producers',Path(producers.__file__).parent),('planner',Path(__file__).parent)]
     return identity({label+'/'+str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest()
-        for label,root in roots for p in sorted(root.rglob('*'))if p.suffix in {'.py','.json','.gz'}and p.is_file()})
+        for label,root in roots for p in sorted(root.rglob('*'))if p.suffix in {'.py','.json','.gz','.mjs'}and p.is_file()})
 
 
 def fingerprint(state):
@@ -176,7 +176,15 @@ class Planner:
                 size=sum(len(canonical(proposal))for proposal in proposals)
                 if proposal_bytes+size>getattr(self.options,'memory_bytes',512_000_000):
                     self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='deferred',reason='proposal byte budget'))
-                else:groups.append(deque(proposals));proposal_bytes+=size
+                else:
+                    # Admit the first edge of a discovered family immediately.
+                    # Later recipe work must not consume the deadline before an
+                    # already-authored candidate receives any proof attempt.
+                    # Remaining proposals still use round-robin admission.
+                    first,*remaining=proposals
+                    proposal_bytes+=size
+                    yield first
+                    if remaining:groups.append(deque(remaining))
         # Discovery covers every family before proof attempts. Round-robin
         # admission prevents a prolific producer from consuming the whole budget.
         while groups:
@@ -210,11 +218,14 @@ def main():
     p.add_argument('--semantic-budget',type=int,default=4096);p.add_argument('--semantic-rounds',type=int,default=None)
     p.add_argument('--candidate-limit',type=int,default=4096);p.add_argument('--emit',type=Path)
     for name in ['profile','workload','target-profile']:p.add_argument('--'+name,type=Path)
+    p.add_argument('--measure-workload',type=Path,help='acquire comparable offline observations before selection')
+    p.add_argument('--measure-timeout',type=int,default=120)
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
     args=p.parse_args()
     if any(getattr(args,n)<0 for n in ['budget','state_limit','time_seconds','memory_bytes','check_timeout','proposal_timeout','semantic_budget','candidate_limit']):p.error('planning budgets must be nonnegative')
     if args.state_limit<1 or args.memory_bytes<1 or args.check_timeout<1 or args.proposal_timeout<1:p.error('positive state/memory/process budgets required')
     if args.semantic_rounds is not None and args.semantic_rounds<0:p.error('semantic rounds must be nonnegative')
+    if not 1<=args.measure_timeout<=600:p.error('measurement process budget must be between 1 and 600 seconds')
     root=args.knowledge_root.resolve();compiler=args.compiler.resolve();store=Store(root,args.snapshot)
     store.refresh_index()
     registry,digest=load(args.registry,store)
@@ -235,8 +246,14 @@ def main():
         store,candidates=publish_candidates(root,packages)
         measurements=[measurement_id(c,planner.compiler_hash,args.target)for c in candidates]
         baseline=initial;selected=baseline;selection=dict(reason='missing comparable lifecycle evidence; baseline retained')
-        if all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
+        acquisition=None
+        if args.measure_workload:
+            if any(getattr(args,n)is not None for n in ['profile','workload','target_profile']) or args.migration_count:raise ValueError('offline pure-call acquisition cannot combine existing profiles or migration')
+            from .offline_measurements import acquire
+            target,workload,profile,acquisition=acquire(planner,store,packages,[s for _,s in states.values()],measurements,args.measure_workload)
+        elif all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             profile=json.loads(args.profile.read_bytes());workload=json.loads(args.workload.read_bytes());target=json.loads(args.target_profile.read_bytes())
+        if acquisition is not None or all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             if target.get('backend')!=args.target:raise ValueError('measurement backend must match emission lane')
             eligible=[m for m,(_,s)in zip(measurements,states.values())if s.get('capability',{}).get('emittable',True)]
             chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,{m:'migrate:'+measurements[0]+':portable:'+m for m in measurements[1:]})
@@ -249,8 +266,8 @@ def main():
         if load(args.registry,Store(root,root/'store/snapshots'/f'{planner.snapshot}.json'))[1]!=digest:raise ValueError('recipe registry changed during planning')
         args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(selected)+b'\n')
         receipt.update(dict(schema=1,semantics=SEMANTICS,status='checked',source=source,compiler_sha256=planner.compiler_hash,
-            registry_sha256=digest,producer_sha256=planner.code_hash,reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
-            selection=selection,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
+            registry_sha256=digest,producer_sha256=planner.code_hash,reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
+            selection=selection,measurement_acquisition=acquisition,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
         Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
         planner.close()
         if args.emit:

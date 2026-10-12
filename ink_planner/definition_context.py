@@ -26,16 +26,18 @@ def applicable(law, program, subject):
     return True
 
 
-def applicable_roots(store, roots, program, subject):
+def applicable_roots(store, roots, program, subject, objects=None):
     """Dependency contexts must also be applicable. Cycles stay checker errors."""
     cache = {}
+    objects={} if objects is None else objects
 
     def visit(identity, active):
         if identity in cache:
             return cache[identity]
         if identity in active:
             return False
-        entry = store.object(identity)
+        if identity not in objects:objects[identity]=store.object(identity)
+        entry=objects[identity]
         ok = applicable(entry['payload'], program, subject) and all(
             visit(dep, active | {identity}) for dep in entry['dependencies'])
         cache[identity] = ok

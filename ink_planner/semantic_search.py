@@ -383,14 +383,14 @@ def selection_roots(applications):
     return sorted(roots)
 
 
-def discovery_objects(store, roots):
+def discovery_objects(store, roots, fetched=None):
     """Authenticate discovery bytes individually; no aggregate proof admission."""
     objects = {}
     pending = list(sorted(roots))
     while pending:
         ident = pending.pop()
         if ident in objects: continue
-        obj = store.object(ident)
+        obj = fetched[ident] if fetched is not None and ident in fetched else store.object(ident)
         objects[ident] = obj
         pending.extend(obj['dependencies'])
     return objects
@@ -485,9 +485,24 @@ class SelectionChecker:
         self.incremental_sessions.clear()
 
 
-def discover_roots(store, sorts):
+def discover_roots(store, sorts, terms=None):
     """Page type-indexed discovery independently of proof-check attempts."""
     roots = set()
+    if terms is not None:
+        from ink_knowledge.pattern_index import heads,candidates,targets
+        pending=set().union(*(heads(t)for t in terms));seen=set()
+        while pending:
+            sort,head=pending.pop()
+            if (sort,head)in seen:continue
+            seen.add((sort,head));after=None
+            while True:
+                page=candidates(store,json.loads(sort),head,after=after,limit=1024)
+                for ident in page:
+                    if ident not in roots:roots.add(ident);pending.update(targets(store,ident)-seen)
+                if len(page)<1024:break
+                after=page[-1]
+            if len(roots)>8192 or len(seen)>16384:raise ValueError('pattern discovery reachability budget')
+        return roots
     for sort in sorts:
         after = None
         while True:
@@ -571,21 +586,25 @@ def main():
             elif isinstance(v,list):
                 for x in v:walk(x)
         walk(subject)
-        roots = discover_roots(store, sorts.values())
+        generated, producer_receipts = generate(subject, json.loads(args.core.read_text()), store)
+        seeds=list(subject['functions'].values())+[obj['payload'][field]for obj in generated.values()for field in ['from','to']]
+        roots = discover_roots(store, sorts.values(), seeds)
         if __package__:
             from .definition_context import applicable_roots
         else:
             from definition_context import applicable_roots
         core_program = json.loads(args.core.read_text())['program']
-        roots = applicable_roots(store, roots, core_program, subject)
-        discovery = discovery_objects(store, roots)
-        generated, producer_receipts = generate(subject, json.loads(args.core.read_text()))
+        fetched={}
+        roots = applicable_roots(store, roots, core_program, subject, fetched)
+        discovery = discovery_objects(store, roots, fetched)
+        del fetched
         original_snapshot_id = store.snapshot_id
         if generated:
             # An immutable derived catalogue transports proposals and exact
             # dependencies. Membership remains distinct from mathematical admission.
             discovery.update(generated)
-            store = Store.publish(tmp / 'generated-knowledge', discovery.values())
+            from ink_knowledge.proposal_views import ProposalViews
+            store = ProposalViews(store, discovery, tmp / 'generated-knowledge')
             roots = sorted(set(roots) | set(generated))
         def law(e):return dict(schema=1,semantics=e['semantics'],dependencies=e['dependencies'],**e['payload'])
         certificates=[]
@@ -595,7 +614,8 @@ def main():
                 admitted=json.loads(subprocess.check_output([compiler,'check-properties',args.core.resolve(),path,'--core'],text=True))
                 for fact,goal in zip(packet['facts'],admitted['equations']):certificates.append(dict(goal=goal,proof=fact['proof']))
                 discovery.update(packet['knowledge']['objects'])
-            store=Store.publish(tmp/'with-properties',discovery.values())
+            from ink_knowledge.proposal_views import ProposalViews
+            store=ProposalViews(store if not isinstance(store,ProposalViews)else store.source,discovery,tmp/'with-properties')
         catalogue=dict(roots=sorted(roots),objects={i:law(e) for i,e in discovery.items() if e['kind']=='rewrite'},certificates=certificates)
         package = dict(schema=1, semantics='ink-evidence-v1', input_core_sha256=subject['input_core_sha256'],
                        knowledge=None, applications=[])
@@ -629,5 +649,5 @@ def main():
     if cache_key:
         if plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context,search_options)!=cache_key:raise ValueError('compilation inputs changed during search')
         plan_cache.save(args.cache_dir,cache_key,json.dumps(dict(schema=1,key=cache_key,source_snapshot=source_snapshot,package=package),separators=(',',':')).encode()+b'\n')
-    print(json.dumps(dict(compiler_sha256=original_hash, database=dict(snapshot_sha256=store.snapshot_id,source_snapshot_sha256=original_snapshot_id,entries=len(roots),loaded_objects=len(discovery),producers=producer_receipts), cost_model=cost_model_receipt, **receipt)))
+    print(json.dumps(dict(compiler_sha256=original_hash, database=dict(snapshot_sha256=__import__('ink_knowledge').identity(package['knowledge']['snapshot']),source_snapshot_sha256=original_snapshot_id,entries=len(roots),loaded_objects=len(discovery),producers=producer_receipts), cost_model=cost_model_receipt, **receipt)))
 if __name__ == '__main__': main()
