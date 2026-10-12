@@ -36,3 +36,29 @@ class RecursivePlans(unittest.TestCase):
             self.assertNotEqual(receipt['stop_reason'],'fixed-point')
 
 if __name__=='__main__':unittest.main()
+
+class EffortAndCleanup(unittest.TestCase):
+    def test_explicit_budgets_override_effort_presets(self):
+        from types import SimpleNamespace
+        from ink_planner.compiled_planning import effort_options,EFFORTS
+        for effort in EFFORTS:
+            args=SimpleNamespace(planning_effort=effort,**{k:None for k in EFFORTS[effort]})
+            args.time_seconds=17;effort_options(args)
+            self.assertEqual(args.time_seconds,17);self.assertEqual(args.budget,EFFORTS[effort]['budget'])
+    def test_search_closes_suspended_recipe_generator_at_state_bound(self):
+        closed=[]
+        def expand(state,_):
+            try:
+                yield dict(status='proposal',step=dict(kind='rewrite',package={}))
+                raise AssertionError('must not resume after state bound')
+            finally:closed.append(True)
+        check=lambda p:dict(source=str(len(p['steps'])),properties=[])
+        explore(dict(steps=[]),expand,check,lambda _:0,state_limit=1,time_seconds=1)
+        self.assertEqual(closed,[True])
+
+class ProducerDeadline(unittest.TestCase):
+    def test_unfinished_producers_do_not_report_a_fixed_point(self):
+        check=lambda p:dict(source='original',properties=[])
+        expand=lambda *_:iter([dict(status='search-limit',reason='time')])
+        _,receipt=explore(dict(steps=[]),expand,check,lambda _:0,time_seconds=10)
+        self.assertEqual(receipt['stop_reason'],'time')

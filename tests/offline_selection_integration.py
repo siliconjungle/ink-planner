@@ -19,13 +19,13 @@ with tempfile.TemporaryDirectory(prefix='ink-offline-selection-integration-')as 
     registry,_=load();registry['recipes']=[r for r in registry['recipes']if r['id']=='semantic-laws'];reg=root/'recipes.json';reg.write_text(json.dumps(registry))
     spec=dict(schema=1,phases={'call:run':[dict(function='run',args=[list(range(32768)),3])]},profile={'call:run':1},workload=dict(shape={'rows':32768,'take':3},distribution='development acquisition',concurrency=1,residency='captured inputs; owned outputs'))
     workload=root/'workload.json';workload.write_text(json.dumps(spec));output=root/'selected.mjs'
-    command=[str(compiler),'compile',str(source),'--optimise',str(store.root),'--registry',str(reg),'--target','javascript','--search-budget','128','--state-limit','16','--planning-seconds','15','-o',str(output)]
+    command=[str(compiler),'compile',str(source),'--optimise',str(store.root),'--registry',str(reg),'--target','javascript','--search-budget','128','--state-limit','16','--planning-seconds','15','--planning-effort','quick','--recipe-workers','2','--semantic-budget','128','--semantic-seconds','10','-o',str(output)]
     env=dict(os.environ,INK_DISTRIBUTION=str(repo))
     r=subprocess.run(command,capture_output=True,text=True,env=env);assert r.returncode==0,r.stderr
     baseline=json.loads(Path(str(output)+'.planning.json').read_bytes());assert not baseline['steps']
     r=subprocess.run([*command,'--measure-workload',str(workload)],capture_output=True,text=True,env=env);assert r.returncode==0,r.stderr
     selected=json.loads(Path(str(output)+'.planning.json').read_bytes());assert selected['steps']
-    receipt=json.loads(Path(str(output)+'.planning.json.receipt.json').read_bytes());assert receipt['selection']['baseline_comparable'];assert receipt['measurement_acquisition']['observations']
+    receipt=json.loads(Path(str(output)+'.planning.json.receipt.json').read_bytes());assert receipt['planning_budgets']['effort']=='quick';assert receipt['planning_budgets']['time_seconds']==15;assert receipt['planning_budgets']['semantic_budget']==128;assert receipt['selection']['baseline_comparable'];assert receipt['measurement_acquisition']['observations']
     subprocess.run([str(compiler),'check-plan',str(source),str(output)+'.planning.json'],check=True,capture_output=True)
     cases=[]
     for xs in [[],[0,2,4294967295],[19,1,5,3,7],list(range(193))]:

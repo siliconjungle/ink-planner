@@ -210,3 +210,13 @@ for source input; checked core input already carries its evidence. Candidate
 publication includes the dependency closure of embedded pure and state proofs,
 including inside composed plans. Missing comparable performance observations
 retains the baseline; a proof of correctness is not a speed estimate.
+
+## Streaming planning and effort
+
+Compiled planning now admits proposals while producers continue running. Two
+bounded recipe processes share the budget, and semantic matching reuses exact
+unchanged subtrees. Quick, balanced and thorough settings make the exploration
+budget explicit; individual flags override the preset. See
+[search scheduling](docs/search-scheduling.md) for limits, cache behaviour and
+research references. Wider discovery still requires independent proof replay and
+comparable performance evidence before selection.

@@ -6,6 +6,7 @@ premise is replayed by the independent compiler checker. Cost guides search only
 import argparse
 import copy
 import hashlib
+import heapq
 import json
 import time
 import subprocess
@@ -28,12 +29,12 @@ def children(t):
 
 
 def set_child(t, i, child):
-    t = copy.deepcopy(t); n = t['node']
-    if 'Op' in n: n['Op'][1][i] = child
-    elif 'Lambda' in n: n['Lambda'] = child
-    elif 'Cons' in n: n['Cons'][i] = child
-    else: raise ValueError('invalid child')
-    return t
+    n=t['node'];items=list(children(t));items[i]=child
+    if 'Op'in n:node={'Op':[n['Op'][0],items]}
+    elif 'Lambda'in n:node={'Lambda':child}
+    elif 'Cons'in n:node={'Cons':items}
+    else:raise ValueError('invalid child')
+    return dict(t,node=node)
 
 
 def map_children(t, transform):
@@ -207,19 +208,8 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
     if budget<0 or width<1 or memory_bytes<1 or time_seconds<0 or (rounds is not None and rounds<0):raise ValueError("search budgets")
     started=time.monotonic();deferred=[];memo_edges=[];iteration=0;memory_exhausted=False;timed_out=False;prefix_states={}
     objects = catalogue['objects']
-    # Index on the typed root constructor. New operation combinations require
-    # data entries, never a new matching case. Root-variable laws are universal.
-    index = {}
-    def shape(t):
-        n = t['node']
-        return (key(t['sort']), 'Op:' + n['Op'][0] if isinstance(n, dict) and 'Op' in n else
-                next(iter(n)) if isinstance(n, dict) else str(n))
-    for ident in catalogue['roots']:
-        law = objects[ident]; pattern = law['from']
-        if isinstance(pattern['node'], dict) and 'Free' in pattern['node'] and pattern['node']['Free'] in law['params']:
-            root = (key(pattern['sort']), '*')
-        else: root = shape(pattern)
-        index.setdefault(root, []).append(ident)
+    from ink_planner.term_matching import Matcher
+    matcher=Matcher(objects,catalogue['roots'],key,children,match,substitute,memory_bytes)
     component_model = operation_costs if isinstance(operation_costs, TargetCostModel) else None
     if component_model is not None and core_program is None:
         raise ValueError('schema2 requires actual core parameter signatures')
@@ -267,15 +257,10 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         for _, bodies, applications in frontier:
             for name, body in bodies.items():
                 for path, target in positions(body):
-                    ids = index.get(shape(target), []) + index.get((key(target['sort']), '*'), [])
-                    if neighbourhood is not None:
-                        hinted.update(set(neighbourhood.hints(target)).intersection(ids))
-                    for ident in ids:
-                        law = objects[ident]; args = {}
-                        if not match(law['from'], target, law['params'], args): continue
-                        if set(args) != set(law['params']): continue
-                        new = substitute(law['to'], args)
-                        if new == target: continue
+                    if time.monotonic()-started>=time_seconds:timed_out=True;break
+                    for ident,args,new in matcher.matches(target):
+                        if time.monotonic()-started>=time_seconds:timed_out=True;break
+                        law=objects[ident]
                         updated = dict(bodies); updated[name] = replace(body, path, new)
                         fingerprint = key(updated)
                         if fingerprint in seen: continue
@@ -285,7 +270,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                         proposal_key = key(proposal)
                         if proposal_key in pending_seen: continue
                         size=len(fingerprint.encode())+len(proposal_key.encode())
-                        if memo_bytes+pending_bytes+size>memory_bytes:
+                        if memo_bytes+pending_bytes+size+matcher.bytes>memory_bytes:
                             memory_exhausted=True;dropped+=1;continue
                         pending_bytes+=size;pending_seen.add(proposal_key)
                         score = score_bodies(updated)
@@ -316,6 +301,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         processed=0
         for processed, (score, updated, proposal, fingerprint, law, args) in enumerate(pending,1):
             if fingerprint in seen: continue
+            if time.monotonic()-started>=time_seconds:timed_out=True;processed-=1;break
             if checked >= budget: exhausted = True; processed-=1; break
             checked += 1
             candidate = (score, updated, proposal, fingerprint, law, args)
@@ -347,14 +333,15 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
             for item in pending[processed:]:
                 if item[3]in seen:continue
                 size=len(item[3].encode())+len(key(item[2]).encode())
-                if memo_bytes+retained+size>memory_bytes:memory_exhausted=True;break
+                if memo_bytes+retained+size+matcher.bytes>memory_bytes:memory_exhausted=True;break
                 deferred.append(item);retained+=size
-        if exhausted or memory_exhausted:break
+        if exhausted or memory_exhausted or timed_out:break
         if not candidates and not deferred:break
         frontier = candidates
     receipt = dict(initial_cost=initial, selected_cost=best[0], attempts=checked,
                    rejected=rejected, generated_proposals=generated, exhausted=exhausted, estimate='structural; not measured runtime')
     receipt["memo"]=dict(strategy=strategy,states=len(seen),edges=len(memo_edges),deferred=len(deferred),rounds=iteration,memory_exhausted=memory_exhausted,timed_out=timed_out,retained_memo_bytes=memo_bytes,dropped_proposals=dropped,scope="Exact typed term states; admitted edges only; no hash grants proof authority")
+    receipt['matching'] = matcher.receipt()
     receipt['beam_diversity'] = dict(enabled=diverse, dimensions=list(dimensions),
         initial=profile(start), selected=profile(best[1]), scope='Untrusted source-work hypotheses; no timing or proof authority')
     if component_model is not None:
@@ -516,19 +503,23 @@ def discover_roots(store, sorts, terms=None):
     """Page type-indexed discovery independently of proof-check attempts."""
     roots = set()
     if terms is not None:
-        from ink_knowledge.pattern_index import heads,candidates,targets
+        from ink_knowledge.pattern_index import heads,Reader
         pending=set().union(*(heads(t)for t in terms));seen=set()
-        while pending:
-            sort,head=pending.pop()
-            if (sort,head)in seen:continue
-            seen.add((sort,head));after=None
-            while True:
-                page=candidates(store,json.loads(sort),head,after=after,limit=1024)
-                for ident in page:
-                    if ident not in roots:roots.add(ident);pending.update(targets(store,ident)-seen)
-                if len(page)<1024:break
-                after=page[-1]
-            if len(roots)>8192 or len(seen)>16384:raise ValueError('pattern discovery reachability budget')
+        agenda=list(pending);heapq.heapify(agenda)
+        with Reader(store)as reader:
+            while agenda:
+                sort,head=heapq.heappop(agenda);pending.remove((sort,head))
+                if (sort,head)in seen:continue
+                seen.add((sort,head));after=None
+                while True:
+                    page=reader.candidates(json.loads(sort),head,after=after,limit=1024)
+                    fresh=set(page)-roots;roots.update(page)
+                    introduced=reader.targets(fresh)-seen-pending
+                    pending.update(introduced)
+                    for item in introduced:heapq.heappush(agenda,item)
+                    if len(page)<1024:break
+                    after=page[-1]
+                if len(roots)>8192 or len(seen)>16384:raise ValueError('pattern discovery reachability budget')
         return roots
     for sort in sorts:
         for semantics in SEMANTICS:
@@ -555,6 +546,7 @@ def main():
     a.add_argument('--memory-bytes',type=int,default=256_000_000)
     a.add_argument('--time-seconds',type=int,default=600)
     a.add_argument('--alternatives',type=Path,help='write every admitted typed alternative for layered planning')
+    a.add_argument('--stream-alternatives',action='store_true',help='flush admitted alternatives during search for layered planning')
     a.add_argument('--properties',type=Path,help='source-bound property packets; final checker replays every reused premise')
     a.add_argument('--cache-dir',type=Path,help='bounded search-hint cache; every hit is proof-checked again')
     a.add_argument('--cache-context',type=Path,help='additional exact target/toolchain/workload/profile bytes in the cache key')
@@ -567,6 +559,7 @@ def main():
     a.add_argument('--discovery-accelerator',action='store_true',help='opt-in authenticated in-memory Bloom/learned discovery index')
     a.add_argument('--ann-hints',action='store_true',help='opt-in HNSW structural neighbourhood ordering; requires optional ann extra')
     args = a.parse_args()
+    if args.stream_alternatives and not args.alternatives:a.error('streaming requires --alternatives')
     if not 1<=args.search_restarts<=16:a.error('search restarts must be between 1 and 16')
     from ink_planner.search_policy import validate_model, search_restarts
     search_model=validate_model(json.loads(args.search_model.read_text())) if args.search_model else None
@@ -681,9 +674,19 @@ def main():
         # and premise dependency closure, against this same input module.
         checker = SelectionChecker(compiler, args.core.resolve(), store, tmp)
         check = checker.check
+        alternative_output=None
+        if args.stream_alternatives:
+            args.alternatives.parent.mkdir(parents=True,exist_ok=True)
+            alternative_output=args.alternatives.open('w')
+        class Alternatives(list):
+            def append(self,alternative):
+                if alternative_output is None:super().append(alternative)
+                else:
+                    value=dict(package,applications=alternative,knowledge=store.bundle(selection_roots(alternative)))
+                    alternative_output.write(json.dumps(value,separators=(',',':'))+'\n');alternative_output.flush()
         try:
             if not check([]): raise ValueError('compiler rejected the unchanged input')
-            alternatives=[]
+            alternatives=Alternatives()
             applications, receipt = search_restarts(search, subject, catalogue, check, budget=args.budget,
                 strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, model=search_model,scorer=scorer,
                 operation_costs=operation_costs, rounds=args.rounds, core_program=core_program,neighbourhood=neighbourhood,engine_strategy=args.strategy,
@@ -701,10 +704,11 @@ def main():
                     snapshot=store.snapshot_id,policy=receipt['search_policy'],rows=receipt['training_rows']),indent=2)+'\n')
         finally:
             checker.close()
+            if alternative_output is not None:alternative_output.close()
         # Even non-compact formatting must not resupply unused discovery roots
         # to a later replay's single fixed proof-work budget.
         package['knowledge'] = store.bundle(selection_roots(applications))
-        if args.alternatives:
+        if args.alternatives and not args.stream_alternatives:
             args.alternatives.parent.mkdir(parents=True,exist_ok=True)
             with args.alternatives.open('w') as output:
                 for alternative in alternatives:

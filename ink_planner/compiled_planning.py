@@ -14,6 +14,17 @@ from .implementation_selection import measurement_id
 from .representation_selection import rank
 
 SEMANTICS='ink-compiled-plan-v1'
+# Explicit command-line budgets override these named, bounded offline efforts.
+EFFORTS={
+    'quick':dict(budget=2048,state_limit=32,time_seconds=8,semantic_budget=2048,semantic_seconds=8,proposal_timeout=8),
+    'balanced':dict(budget=32768,state_limit=512,time_seconds=60,semantic_budget=8192,semantic_seconds=30,proposal_timeout=60),
+    'thorough':dict(budget=131072,state_limit=4096,time_seconds=300,semantic_budget=32768,semantic_seconds=120,proposal_timeout=180),
+}
+
+def effort_options(args):
+    for name,value in EFFORTS[args.planning_effort].items():
+        if getattr(args,name) is None:setattr(args,name,value)
+    return args
 
 def code_fingerprint():
     import ink_knowledge,producers
@@ -41,25 +52,30 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
     while agenda:
         if time.monotonic()-started>=time_seconds:stopped='time';break
         _,_,parent=heapq.heappop(agenda);package,state=states[parent]
-        for proposal in expand(state,states):
-            if time.monotonic()-started>=time_seconds:stopped='time';break
-            if attempts>=budget:stopped='proof-attempts';break
-            if proposal.get('status')!='proposal':continue
-            steps=proposal.get('steps',[proposal.get('step')])
-            if not steps or any(step is None for step in steps):continue
-            candidate=copy.deepcopy(package);candidate['steps'].extend(steps)
-            attempts+=1
-            try:checked=check(candidate)
-            except (ValueError,OSError,subprocess.TimeoutExpired)as error:
-                rejections.append(dict(parent=parent,recipe=proposal.get('recipe'),label=proposal.get('label'),reason=str(error)[-2000:]));continue
-            child=fingerprint(checked)
-            edges.append(dict(source=parent,target=child,step=identity(steps),kinds=[step['kind']for step in steps],recipe=proposal.get('recipe')))
-            if child in states:continue
-            size=len(canonical(candidate))+len(canonical(checked))
-            if len(states)>=state_limit or retained+size>memory_bytes:
-                stopped='states'if len(states)>=state_limit else'memory';break
-            retained+=size;states[child]=(candidate,checked);serial+=1
-            heapq.heappush(agenda,(priority(checked),serial,child))
+        expansion=expand(state,states)
+        try:
+            for proposal in expansion:
+                if time.monotonic()-started>=time_seconds:stopped='time';break
+                if attempts>=budget:stopped='proof-attempts';break
+                if proposal.get('status')=='search-limit':stopped=proposal['reason'];break
+                if proposal.get('status')!='proposal':continue
+                steps=proposal.get('steps',[proposal.get('step')])
+                if not steps or any(step is None for step in steps):continue
+                candidate=copy.deepcopy(package);candidate['steps'].extend(steps)
+                attempts+=1
+                try:checked=check(candidate)
+                except (ValueError,OSError,subprocess.TimeoutExpired)as error:
+                    rejections.append(dict(parent=parent,recipe=proposal.get('recipe'),label=proposal.get('label'),reason=str(error)[-2000:]));continue
+                child=fingerprint(checked)
+                edges.append(dict(source=parent,target=child,step=identity(steps),kinds=[step['kind']for step in steps],recipe=proposal.get('recipe')))
+                if child in states:continue
+                size=len(canonical(candidate))+len(canonical(checked))
+                if len(states)>=state_limit or retained+size>memory_bytes:
+                    stopped='states'if len(states)>=state_limit else'memory';break
+                retained+=size;states[child]=(candidate,checked);serial+=1
+                heapq.heappush(agenda,(priority(checked),serial,child))
+        finally:
+            if hasattr(expansion,'close'):expansion.close()
         if stopped:break
     return states,dict(attempts=attempts,admitted_states=len(states),edges=edges,rejected=rejections,
         stop_reason=stopped or'fixed-point',remaining=len(agenda),retained_bytes=retained,
@@ -121,78 +137,66 @@ class Planner:
             usage_profile=getattr(self.options,'observed_resources',None),knowledge_snapshot=self.snapshot,representation_pool=list(pool.values()),emit_target=self.options.target,check_timeout=self.options.check_timeout,
             proposal_timeout=self.options.proposal_timeout,semantic_budget=self.options.semantic_budget,
             semantic_rounds=self.options.semantic_rounds,candidate_limit=self.options.candidate_limit)
-        path=self.directory/'recipe-context.json';path.write_bytes(canonical(context)+b'\n')
-        groups=[];proposal_bytes=0
+        context['semantic_seconds']=getattr(self.options,'semantic_seconds',600)
+        path=self.directory/('context-'+identity(context)+'.json');path.write_bytes(canonical(context)+b'\n')
+        jobs=[];counts={};headers=set();invalid=set();proposal_bytes=0;complete=set()
+        environment=dict(os.environ,INK_COMPILER=str(self.compiler),PYTHONPATH=os.pathsep.join([str(self.root),str(Path(__file__).parents[1]),os.environ.get('PYTHONPATH','')]))
         for recipe in self.recipes:
-            proposals=[]
-            if time.monotonic()>=self.deadline:
-                self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='deferred',reason='planning time budget'))
-                continue
-            output=self.directory/'recipe-output.jsonl'
-            output.unlink(missing_ok=True)
+            missing=[name for name in recipe.get('requires',[])if context.get(name)is None]
+            if missing:
+                self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='declined',reason='missing inputs: '+','.join(missing)));continue
             key=identity(dict(recipe=recipe,source=state['source'],compiler=self.compiler_hash,code=self.code_hash,snapshot=self.snapshot,target=self.options.target,
                 inputs={k:context.get(k)for k in recipe.get('inputs',context.keys())},
-                budgets={k:context.get(k)for k in ['check_timeout','proposal_timeout','semantic_budget','semantic_rounds','candidate_limit']}))
-            cached=self.directory/('recipe-'+key+'.jsonl')
-            try:
-                environment=dict(os.environ,INK_COMPILER=str(self.compiler),PYTHONPATH=os.pathsep.join([str(self.root),str(Path(__file__).parents[1]),os.environ.get('PYTHONPATH','')]))
-                command=[sys.executable,'-m','ink_knowledge.recipes','--recipe',recipe['id'],'--stream','--context',str(path),'-o',str(output)]
-                if self.options.registry:command+=['--registry',str(self.options.registry)]
-                if cached.exists():
-                    shutil.copyfile(cached,output);self.recipe_cache_hits+=1
-                else:
-                    try:
-                        result=subprocess.run(command,capture_output=True,text=True,timeout=min(self.options.proposal_timeout,max(0.01,self.deadline-time.monotonic())),env=environment)
-                        if result.returncode:self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='partial',reason=result.stderr[-2000:]))
-                    except subprocess.TimeoutExpired:
-                        self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='partial',reason='proposal process time budget'))
-                if output.stat().st_size>128_000_000:raise ValueError('recipe output byte budget')
-                if not cached.exists():shutil.copyfile(output,cached)
-                with output.open()as stream:
-                    header=json.loads(next(stream));response=[]
-                    if header['registry_sha256']!=self.registry_digest:raise ValueError('recipe registry changed')
-                    for line in stream:
-                        if not line.endswith('\n'):break
-                        response.append(json.loads(line))
-                counts={}
-                for row in response:
-                    counts[row['status']]=counts.get(row['status'],0)+1
-                    if row['status']=='declined':self.notes.append(dict(source=state['source'],recipe=recipe['id'],**row))
-                    elif row['status']=='proposal':proposals.append(dict(row,recipe=recipe['id']))
-                    elif row['status']=='migration':
+                budgets={k:context.get(k)for k in ['check_timeout','proposal_timeout','semantic_budget','semantic_rounds','semantic_seconds','candidate_limit']}))
+            output=self.directory/('output-'+key+'.jsonl')
+            command=[sys.executable,'-m','ink_knowledge.recipes','--recipe',recipe['id'],'--stream','--context',str(path),'-o',str(output)]
+            if self.options.registry:command+=['--registry',str(self.options.registry)]
+            jobs.append(dict(recipe=recipe,key=key,command=command,env=environment,output=output,
+                cache=self.directory/('recipe-'+key+'.jsonl'),stdout=self.directory/(key+'.stdout'),stderr=self.directory/(key+'.stderr')))
+        from .recipe_streams import run
+        stream=run(jobs,getattr(self.options,'recipe_workers',2),self.deadline,self.options.proposal_timeout,
+            min(128_000_000,getattr(self.options,'memory_bytes',512_000_000)))
+        try:
+            for job,event in stream:
+                recipe=job['recipe'];name=recipe['id'];key=job['key']
+                if event['kind']=='done':
+                    complete.add(name)
+                    if event['cached']:self.recipe_cache_hits+=1
+                    if event['complete']and key in headers and key not in invalid:
+                        if not event['cached']:shutil.copyfile(job['output'],job['cache'])
+                        status='visited';reason=None
+                    else:
+                        status='partial';reason=event['reason']or'invalid recipe stream'
+                    self.notes.append(dict(source=state['source'],recipe=name,status=status,reason=reason,counts=counts.get(key,{}),elapsed_seconds=event['elapsed_seconds']));continue
+                if key in invalid:continue
+                try:
+                    row=json.loads(event['raw'])
+                    if key not in headers:
+                        if row!={'recipe':name,'registry_sha256':self.registry_digest}:raise ValueError('recipe header/registry changed')
+                        headers.add(key);continue
+                    status=row['status'];counts.setdefault(key,{})[status]=counts.get(key,{}).get(status,0)+1
+                    if status=='declined':self.notes.append(dict(source=state['source'],recipe=name,**row));continue
+                    if status=='migration':
                         before=self.directory/'migration-from.json';after=self.directory/'migration-to.json';bridge=self.directory/'migration.json';source=self.directory/'migration-core.json'
                         before.write_bytes(canonical(row['source'])+b'\n');after.write_bytes(canonical(row['target'])+b'\n');bridge.write_bytes(canonical(row['bridge'])+b'\n');source.write_bytes(canonical(state['core'])+b'\n')
                         receipt=self.invoke('check-migration',source,before,after,bridge,'--core')
-                        self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='checked-migration',receipt=receipt))
-                    elif row['status']=='plan':
-                        # Every imported edge is replayed at this source; its
-                        # independent input binding may decline on a later image.
-                        proposals.append(dict(status='proposal',label=row['label'],steps=row['package']['steps'],recipe=recipe['id']))
-                    else:raise ValueError('unhandled recipe result '+row['status'])
-                self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='visited',counts=counts))
-            except (ValueError,KeyError,OSError,StopIteration,subprocess.TimeoutExpired)as error:
-                self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='declined',reason=str(error)[-2000:]))
-            if proposals:
-                size=sum(len(canonical(proposal))for proposal in proposals)
-                if proposal_bytes+size>getattr(self.options,'memory_bytes',512_000_000):
-                    self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='deferred',reason='proposal byte budget'))
-                else:
-                    # Admit the first edge of a discovered family immediately.
-                    # Later recipe work must not consume the deadline before an
-                    # already-authored candidate receives any proof attempt.
-                    # Remaining proposals still use round-robin admission.
-                    first,*remaining=proposals
+                        self.notes.append(dict(source=state['source'],recipe=name,status='checked-migration',receipt=receipt));continue
+                    if status=='plan':row=dict(status='proposal',label=row['label'],steps=row['package']['steps'])
+                    elif status!='proposal':raise ValueError('unhandled recipe result '+status)
+                    size=len(event['raw'])
+                    if proposal_bytes+size>getattr(self.options,'memory_bytes',512_000_000):
+                        self.notes.append(dict(source=state['source'],recipe=name,status='deferred',reason='proposal byte budget'));continue
                     proposal_bytes+=size
-                    yield first
-                    if remaining:groups.append(deque(remaining))
-        # Discovery covers every family before proof attempts. Round-robin
-        # admission prevents a prolific producer from consuming the whole budget.
-        while groups:
-            remaining=[]
-            for group in groups:
-                yield group.popleft()
-                if group:remaining.append(group)
-            groups=remaining
+                    yield dict(row,recipe=name)
+                except (ValueError,KeyError,TypeError,OSError,subprocess.TimeoutExpired)as error:
+                    invalid.add(key);self.notes.append(dict(source=state['source'],recipe=name,status='declined',reason=str(error)[-2000:]))
+        finally:stream.close()
+        unfinished=False
+        for job in jobs:
+            if job['recipe']['id']not in complete:
+                unfinished=True
+                self.notes.append(dict(source=state['source'],recipe=job['recipe']['id'],status='deferred',reason='planning time budget'))
+        if unfinished:yield dict(status='search-limit',reason='time')
     def priority(self,state):
         # The structural hypothesis orders exploration only. It cannot select a
         # physically different implementation without comparable observations.
@@ -214,22 +218,27 @@ def main():
     p.add_argument('--compiler',type=Path,required=True);p.add_argument('--source',type=Path,required=True)
     p.add_argument('--contract-proofs',type=Path);p.add_argument('--core',action='store_true');p.add_argument('--knowledge-root',type=Path,required=True)
     p.add_argument('--snapshot',type=Path);p.add_argument('--registry',type=Path);p.add_argument('--target',default='rust');p.add_argument('-o',type=Path,required=True)
-    p.add_argument('--budget',type=int,default=16384);p.add_argument('--state-limit',type=int,default=4096)
-    p.add_argument('--time-seconds',type=int,default=3600);p.add_argument('--memory-bytes',type=int,default=512_000_000)
-    p.add_argument('--check-timeout',type=int,default=120);p.add_argument('--proposal-timeout',type=int,default=600)
-    p.add_argument('--semantic-budget',type=int,default=4096);p.add_argument('--semantic-rounds',type=int,default=None)
+    p.add_argument('--planning-effort',choices=sorted(EFFORTS),default='balanced')
+    p.add_argument('--budget',type=int);p.add_argument('--state-limit',type=int)
+    p.add_argument('--time-seconds',type=int);p.add_argument('--memory-bytes',type=int,default=512_000_000)
+    p.add_argument('--check-timeout',type=int,default=120);p.add_argument('--proposal-timeout',type=int)
+    p.add_argument('--recipe-workers',type=int,default=2,help='bounded simultaneous recipe processes')
+    p.add_argument('--semantic-seconds',type=int,help='semantic search time cap per producer')
+    p.add_argument('--semantic-budget',type=int);p.add_argument('--semantic-rounds',type=int,default=None)
     p.add_argument('--candidate-limit',type=int,default=4096);p.add_argument('--emit',type=Path)
     for name in ['profile','workload','target-profile']:p.add_argument('--'+name,type=Path)
     p.add_argument('--measure-workload',type=Path,help='acquire comparable offline observations before selection')
     p.add_argument('--measure-timeout',type=int,default=120)
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
-    args=p.parse_args()
+    args=effort_options(p.parse_args())
+    if not 1<=args.recipe_workers<=8:p.error('recipe workers must be between 1 and 8')
+    if not 0<=args.semantic_seconds<=86400:p.error('semantic seconds must be between 0 and 86400')
     if any(getattr(args,n)<0 for n in ['budget','state_limit','time_seconds','memory_bytes','check_timeout','proposal_timeout','semantic_budget','candidate_limit']):p.error('planning budgets must be nonnegative')
     if args.state_limit<1 or args.memory_bytes<1 or args.check_timeout<1 or args.proposal_timeout<1:p.error('positive state/memory/process budgets required')
     if args.semantic_rounds is not None and args.semantic_rounds<0:p.error('semantic rounds must be nonnegative')
     if not 1<=args.measure_timeout<=600:p.error('measurement process budget must be between 1 and 600 seconds')
     root=args.knowledge_root.resolve();compiler=args.compiler.resolve();store=Store(root,args.snapshot)
-    store.refresh_index()
+    store.ensure_index()
     registry,digest=load(args.registry,store)
     with tempfile.TemporaryDirectory(prefix='ink-compiled-planning-')as temporary:
         directory=Path(temporary);original=directory/'original.json'
@@ -279,7 +288,7 @@ def main():
         if load(args.registry,Store(root,root/'store/snapshots'/f'{planner.snapshot}.json'))[1]!=digest:raise ValueError('recipe registry changed during planning')
         args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(selected)+b'\n')
         receipt.update(dict(schema=1,semantics=SEMANTICS,status='checked',source=source,compiler_sha256=planner.compiler_hash,
-            registry_sha256=digest,producer_sha256=planner.code_hash,reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
+            registry_sha256=digest,producer_sha256=planner.code_hash,planning_budgets=dict(effort=args.planning_effort,recipe_workers=args.recipe_workers,**{name:getattr(args,name)for name in EFFORTS['balanced']}),reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
             selection=selection,measurement_acquisition=acquisition,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
         Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
         planner.close()

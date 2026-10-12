@@ -30,3 +30,23 @@ class IndexCache(unittest.TestCase):
             self.assertEqual(Store(tmp).bundle([oid]),before)
             Store(tmp).refresh_index();self.assertEqual(Store(tmp).bundle([oid]),before)
             with sqlite3.connect(path)as db:self.assertIn('witness_id',{r[1]for r in db.execute('PRAGMA table_info(members)')})
+
+class WarmIndex(unittest.TestCase):
+    def test_warm_ensure_does_not_rewrite_index_and_stale_pin_refreshes(self):
+        with tempfile.TemporaryDirectory()as tmp:
+            obj=entry('definition','test',{'i':1});store=Store.publish(tmp,[obj]);self.assertTrue(store.ensure_index())
+            path=store.root/'index.sqlite';stamp=path.stat().st_mtime_ns
+            self.assertFalse(Store(tmp).ensure_index());self.assertEqual(path.stat().st_mtime_ns,stamp)
+            store=store.extend([entry('definition','test',{'i':2})]);self.assertTrue(store.ensure_index())
+            self.assertEqual(len(store.query(kind='definition')),2)
+    def test_missing_pattern_tables_trigger_migration(self):
+        with tempfile.TemporaryDirectory()as tmp:
+            store=Store.publish(tmp,[entry('definition','test',{'i':1})]);store.ensure_index()
+            with sqlite3.connect(store.root/'index.sqlite')as db:db.execute('DROP TABLE pattern_roots')
+            self.assertTrue(Store(tmp).ensure_index())
+    def test_warm_cache_still_authenticates_mutated_canonical_object(self):
+        with tempfile.TemporaryDirectory()as tmp:
+            obj=entry('definition','test',{'i':1});store=Store.publish(tmp,[obj]);store.ensure_index();ident=identity(obj)
+            (store.root/'store/objects'/f'{ident}.json').write_text(json.dumps(dict(obj,payload={'i':2})))
+            self.assertFalse(Store(tmp).ensure_index())
+            with self.assertRaises(ValueError):Store(tmp).bundle([ident])
