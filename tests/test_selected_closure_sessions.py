@@ -21,7 +21,10 @@ class SelectedClosureSessions(unittest.TestCase):
                 return ids[start:start+kwargs['limit']]
         store=Paged()
         self.assertEqual(discover_roots(store, [{'Value':'U32'}]), set(ids))
-        self.assertEqual([r['limit'] for r in store.requests], [1024,1024])
+        self.assertEqual([r['limit'] for r in store.requests], [1024,1024,1024,1024])
+        self.assertEqual([r['semantics'] for r in store.requests],
+                         ['ink-conditional-laws-v1'] * 2 + ['ink-general-laws-v1'] * 2)
+        self.assertEqual(store.requests[3]['after'], ids[1023])
         self.assertEqual(store.requests[1]['after'], ids[1023])
 
     def test_discovery_does_not_construct_one_limited_authority_bundle(self):

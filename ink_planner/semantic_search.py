@@ -16,7 +16,7 @@ if __package__:
 else:
     from target_costs import TargetCostModel
 
-SEMANTICS = 'ink-conditional-laws-v1'
+SEMANTICS = ('ink-conditional-laws-v1', 'ink-general-laws-v1')
 
 
 def children(t):
@@ -500,13 +500,14 @@ def discover_roots(store, sorts):
     """Page type-indexed discovery independently of proof-check attempts."""
     roots = set()
     for sort in sorts:
-        after = None
-        while True:
-            page = store.query(kind='rewrite', semantics=SEMANTICS, result=sort,
-                               after=after, limit=1024)
-            roots.update(page)
-            if len(page) < 1024: break
-            after = page[-1]
+        for semantics in SEMANTICS:
+            after = None
+            while True:
+                page = store.query(kind='rewrite', semantics=semantics, result=sort,
+                                   after=after, limit=1024)
+                roots.update(page)
+                if len(page) < 1024: break
+                after = page[-1]
     return roots
 
 
