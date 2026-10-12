@@ -16,7 +16,7 @@ if __package__:
 else:
     from target_costs import TargetCostModel
 
-SEMANTICS = 'ink-conditional-laws-v1'
+SEMANTICS = ('ink-conditional-laws-v1', 'ink-general-laws-v1')
 
 
 def children(t):
@@ -409,10 +409,12 @@ def discovery_objects(store, roots):
 
 class SelectionChecker:
     """Bounded checker processes; only exact proposals become proof authority."""
+    MAX_SESSION_REQUESTS = 4098
     def __init__(self, compiler, core, store, directory):
         self.compiler, self.core, self.store, self.directory = compiler, core, store, directory
         self.sessions = {}
         self.incremental_sessions = set()
+        self.session_requests = {}
         self.checked_roots = set()
         self.session_attempts = 0
         self.admission_batches = 0
@@ -421,12 +423,21 @@ class SelectionChecker:
 
     @staticmethod
     def close_session(session):
-        session.stdin.close()
+        try: session.stdin.close()
+        except BrokenPipeError: pass
         try: session.wait(timeout=10)
         except subprocess.TimeoutExpired: session.kill(); session.wait()
         session.stdout.close(); session.stderr.close()
 
     def check(self, applications):
+        # Admission and proof requests share the CLI's fixed session lease.
+        # Reserve two requests for an extension followed by its proof check.
+        for key_, process in list(self.sessions.items()):
+            if self.session_requests[process] >= self.MAX_SESSION_REQUESTS - 2:
+                del self.sessions[key_]
+                self.incremental_sessions.discard(process)
+                del self.session_requests[process]
+                self.close_session(process)
         roots = tuple(selection_roots(applications))
         # A successfully admitted superset can check a smaller proposal too.
         # Every proposal is rechecked against the original module in the child.
@@ -449,6 +460,7 @@ class SelectionChecker:
                 if candidates:
                     prior = max(candidates, key=lambda k: len(set(k) & set(roots)))
                     session = self.sessions[prior]
+                    self.session_requests[session] += 1
                     session.stdin.write(json.dumps({'admit': bundle}) + '\n'); session.stdin.flush()
                     response = session.stdout.readline()
                     result = json.loads(response) if response else {}
@@ -468,6 +480,7 @@ class SelectionChecker:
                         first = next(iter(self.sessions))
                         discarded = self.sessions.pop(first)
                         self.incremental_sessions.discard(discarded)
+                        del self.session_requests[discarded]
                         self.close_session(discarded)
                     path = self.directory / ('closure-' + hashlib.sha256(key(roots).encode()).hexdigest() + '.json')
                     path.write_text(json.dumps(bundle))
@@ -481,9 +494,11 @@ class SelectionChecker:
                         self.rejected_closures += 1
                         return False
                     self.sessions[roots] = session
+                    self.session_requests[session] = 0
                     if capability.get('incremental'): self.incremental_sessions.add(session)
         session = self.sessions.pop(roots_key)
         self.sessions[roots_key] = session
+        self.session_requests[session] += 1
         session.stdin.write(json.dumps(applications) + '\n'); session.stdin.flush()
         response = session.stdout.readline()
         checked = bool(response and json.loads(response).get('checked'))
@@ -494,19 +509,21 @@ class SelectionChecker:
         for session in self.sessions.values(): self.close_session(session)
         self.sessions.clear()
         self.incremental_sessions.clear()
+        self.session_requests.clear()
 
 
 def discover_roots(store, sorts):
     """Page type-indexed discovery independently of proof-check attempts."""
     roots = set()
     for sort in sorts:
-        after = None
-        while True:
-            page = store.query(kind='rewrite', semantics=SEMANTICS, result=sort,
-                               after=after, limit=1024)
-            roots.update(page)
-            if len(page) < 1024: break
-            after = page[-1]
+        for semantics in SEMANTICS:
+            after = None
+            while True:
+                page = store.query(kind='rewrite', semantics=semantics, result=sort,
+                                   after=after, limit=1024)
+                roots.update(page)
+                if len(page) < 1024: break
+                after = page[-1]
     return roots
 
 
