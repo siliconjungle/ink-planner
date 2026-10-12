@@ -41,6 +41,31 @@ def propose(compiler,source_path,source,root,invoke,check_package,core,timeout=3
             invoke(compiler,['emit-action-model',source_path,'-o',model_file],timeout)
             model=json.loads(model_file.read_bytes())
             if model['source']!=source:raise ValueError('proposal source binding mismatch')
+            # Recompute descriptions from checked source before using them as
+            # discovery hints. Package admission still requires universal proofs.
+            try:
+                from producers.access_cache import discover
+                access_file=scratch/'access.json'
+                invoke(compiler,['emit-access',source_path,'-o',access_file],timeout)
+                invoke(compiler,['check-access',source_path,access_file],timeout)
+                access=json.loads(access_file.read_bytes())
+                for query in discover(model,access)[:2]:
+                    label='point-cache:'+query;request=scratch/('point-'+query)/'request.json'
+                    try:
+                        result=subprocess.run([sys.executable,'-m','producers.access_cache',str(model_file),
+                            '--access',str(access_file),'--query',query,'-o',str(request)],
+                            capture_output=True,text=True,timeout=proposal_timeout,
+                            env={**os.environ,'INK_COMPILER':str(compiler),'PYTHONPATH':os.pathsep.join(
+                                [str(producer_root.parent),os.environ.get('PYTHONPATH','')])})
+                        if result.returncode:raise ValueError(result.stderr[-1000:])
+                        package=json.loads(request.read_bytes())
+                        check_package(compiler,source_path,core,package,scratch/('point-'+query+'.json'),timeout)
+                        packages.append(package);notes.append(dict(proposal=label,status='checked',
+                            discovery=json.loads(request.with_suffix('.discovery.json').read_bytes())))
+                    except (ValueError,KeyError,OSError,subprocess.TimeoutExpired) as error:
+                        notes.append(dict(proposal=label,status='declined',reason=str(error)[:1000]))
+            except (ValueError,KeyError,OSError,subprocess.TimeoutExpired) as error:
+                notes.append(dict(proposal='point access discovery',status='declined',reason=str(error)[:1000]))
             for batching in [False,True]:
                 label='grouped' if batching else 'indexed';request=scratch/label/'request.json'
                 try:
