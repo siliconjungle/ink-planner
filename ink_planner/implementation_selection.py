@@ -7,7 +7,7 @@ import argparse, hashlib, json, subprocess, tempfile
 from pathlib import Path
 from ink_knowledge import Store, canonical, identity
 from ink_knowledge.store import hash_id, MAX_VIEW_BYTES
-from ink_knowledge.implementation_candidates import SEMANTICS
+from ink_knowledge.implementation_candidates import SEMANTICS,proof_views
 from .route_selection import read
 from .representation_selection import rank, phase_workload
 
@@ -46,14 +46,17 @@ def candidate_package(store, candidate):
         if obj['dependencies']!=ref['roots']:raise ValueError('candidate dependency roots mismatch')
         package={k:v for k,v in package.items()if k!='knowledge_ref'}
         package['knowledge']=store.bundle(ref['roots'])
-    elif obj['dependencies'] != sorted(set(package['knowledge']['roots'])):
+    elif obj['dependencies'] != sorted({i for view in proof_views(package)for i in view['roots']}):
         raise ValueError('candidate dependency roots mismatch')
     return package
 
-def check_package(compiler, source, core, package, staged, timeout):
+def check_package(compiler, source, core, package, staged, timeout,target=None):
     staged.write_bytes(canonical(package)+b'\n')
     protocol = package.get('semantics')
-    if protocol == 'ink-evidence-v1':
+    if protocol == 'ink-compiled-plan-v1':
+        receipt=json.loads(invoke(compiler,['check-plan',core,staged,'--core',*(['--target',target]if target else[])],timeout))
+        if receipt.get('status')!='checked' or receipt.get('input')!=package.get('input_core_sha256'):raise ValueError('compiled plan checker binding mismatch')
+    elif protocol == 'ink-evidence-v1':
         receipt = json.loads(invoke(compiler, ['check-selection', core, staged], timeout))
         if receipt.get('input_core_sha256') != package.get('input_core_sha256'):
             raise ValueError('selection checker receipt mismatch')
@@ -68,6 +71,7 @@ def check_package(compiler, source, core, package, staged, timeout):
 def emission_args(protocol, source, package, target, output):
     """Fixed CLI adapters for proof formats and lanes, never for algorithms."""
     if target not in TARGETS: raise ValueError('unknown emission lane')
+    if protocol == 'ink-compiled-plan-v1':return ['emit-plan',source,package,'--target',target,'-o',output]
     if protocol == 'ink-source-representation-v1':
         return ['emit-representation', source, package, '--target', target, '-o', output]
     if protocol != 'ink-evidence-v1': raise ValueError('unsupported proof package protocol')
@@ -85,18 +89,22 @@ def main():
     p.add_argument('--emit-target', choices=TARGETS, required=True)
     p.add_argument('-o', '--output', type=Path, required=True)
     p.add_argument('--replay', type=Path, help='recheck a selected package and its pinned database receipt before emission')
+    p.add_argument('--registry',type=Path);p.add_argument('--snapshot',type=Path)
     p.add_argument('--baseline', help='database entry ID')
     p.add_argument('--no-proposals', action='store_true', help='use already published packages only')
     for name in ('candidates', 'target', 'workload', 'profile'):
         p.add_argument('--'+name, type=Path)
-    p.add_argument('--max-candidates', type=int, default=16)
+    p.add_argument('--max-candidates', type=int, default=4096)
+    p.add_argument('--search-budget',type=int,default=16384)
+    p.add_argument('--state-limit',type=int,default=4096)
+    p.add_argument('--planning-seconds',type=int,default=3600)
     p.add_argument('--check-timeout-seconds', type=int, default=120)
     p.add_argument('--proposal-timeout-seconds', type=int, default=300)
     p.add_argument('--migration-count', type=int, default=0)
     p.add_argument('--memory-limit', type=int)
     p.add_argument('--zig', type=Path)
     a = p.parse_args(); compiler = a.compiler.resolve(); source_path = a.source.resolve()
-    if not 0 <= a.max_candidates <= 32 or not 1 <= a.check_timeout_seconds <= 600 or not 1<=a.proposal_timeout_seconds<=600:
+    if not 0 <= a.max_candidates <= 1_000_000 or not 1 <= a.check_timeout_seconds <= 600 or not 1<=a.proposal_timeout_seconds<=600:
         raise ValueError('selection budget')
     compiler_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix='ink-implementation-selection-') as temporary:
@@ -116,7 +124,7 @@ def main():
             package = candidate_package(store, receipt['selected'])
             if raw != canonical(package)+b'\n': raise ValueError('selected package differs from pinned candidate')
             staged = scratch/'package.json'
-            check_package(compiler, source_path, core, package, staged, a.check_timeout_seconds)
+            check_package(compiler, source_path, core, package, staged, a.check_timeout_seconds,a.emit_target)
             args = emission_args(package['semantics'], source_path, staged, a.emit_target, a.output)
             if a.zig and a.emit_target in ('wgpu', 'webgpu'): args += ['--zig', a.zig]
             invoke(compiler, args, 600)
@@ -127,9 +135,9 @@ def main():
         proposals=[];proposed=[]
         if not a.no_proposals and a.candidates is None:
             from .automatic_candidates import propose
-            store,baseline,proposed,proposals=propose(compiler,source_path,source,a.knowledge_root,invoke,check_package,core,a.check_timeout_seconds,a.proposal_timeout_seconds)
+            store,baseline,proposed,proposals=propose(compiler,source_path,source,a.knowledge_root,invoke,check_package,core,a.check_timeout_seconds,a.proposal_timeout_seconds,emit_target=a.emit_target,budget=a.search_budget,state_limit=a.state_limit,time_seconds=a.planning_seconds,registry_path=a.registry,snapshot=a.snapshot)
             a.baseline=a.baseline or baseline
-        else:store=Store(a.knowledge_root)
+        else:store=Store(a.knowledge_root,a.snapshot)
         if not a.baseline:p.error('published-only selection requires a baseline')
         hash_id(a.baseline)
         if a.candidates:candidates=json.loads(read(a.candidates, 1_000_000))
@@ -139,14 +147,12 @@ def main():
         if not isinstance(candidates, list) or any(not isinstance(c,str) for c in candidates):
             raise ValueError('candidate list must contain implementation IDs')
         candidates=list(dict.fromkeys([*proposed,*candidates]));candidates=[c for c in candidates if c!=a.baseline]
-        if len(candidates) > 32:
-            raise ValueError('candidate index budget')
         for candidate in candidates: hash_id(candidate)
         checked = []; rejected = []
         for i, candidate in enumerate([a.baseline, *candidates[:a.max_candidates]]):
             try:
                 package = candidate_package(store, candidate)
-                check_package(compiler, source_path, core, package, scratch/f'{i}.json', a.check_timeout_seconds)
+                check_package(compiler, source_path, core, package, scratch/f'{i}.json', a.check_timeout_seconds,a.emit_target)
                 checked.append(dict(candidate=candidate, package=package,
                                     measurement=measurement_id(candidate, compiler_hash, a.emit_target)))
             except (ValueError, OSError, KeyError, subprocess.TimeoutExpired) as e:

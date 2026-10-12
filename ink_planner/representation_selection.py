@@ -24,7 +24,7 @@ def rank(store,program,plans,target,workload,counts,baseline,migration_count=0,m
     if migration_count:phases.update(migration_phases.get(p,'migrate:'+baseline) for p in plans if p!=baseline)
     measured={p:{} for p in plans};evidence={p:[] for p in plans}
     for phase in sorted(phases):
-        observations=store.observations(program,plans,target,phase_workload(workload,phase))
+        observations=store.iter_observations(program,plans,target,phase_workload(workload,phase)) if hasattr(store,"iter_observations")else store.observations(program,plans,target,phase_workload(workload,phase))
         grouped={}
         for obj in observations:grouped.setdefault(obj['plan'],[]).append(obj)
         for plan,objects in grouped.items():
@@ -58,12 +58,12 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('compiler','source','baseline','candidates','knowledge-root','target','workload','profile'):
         p.add_argument('--'+name,type=Path,required=True)
-    p.add_argument('--max-candidates',type=int,default=16);p.add_argument('--check-timeout-seconds',type=int,default=30)
+    p.add_argument('--max-candidates',type=int,default=4096);p.add_argument('--check-timeout-seconds',type=int,default=30)
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
     p.add_argument('-o','--output',type=Path,required=True);a=p.parse_args()
-    if not 0<=a.max_candidates<=32 or not 1<=a.check_timeout_seconds<=300:raise ValueError('selection budget')
+    if not 0<=a.max_candidates<=1_000_000 or not 1<=a.check_timeout_seconds<=300:raise ValueError('selection budget')
     candidates=json.loads(read(a.candidates,1_000_000))
-    if not isinstance(candidates,list) or len(candidates)>32:raise ValueError('candidate index budget')
+    if not isinstance(candidates,list):raise ValueError('candidate index format')
     entries=[dict(request=str(a.baseline.resolve()))]
     for candidate in candidates[:a.max_candidates]:
         if isinstance(candidate,str):candidate=dict(request=candidate)
