@@ -113,7 +113,7 @@ class Planner:
         self.session.stdin.write(canonical(package).decode()+'\n');self.session.stdin.flush()
         receipt=self.receive()
         if receipt.get('error'):raise ValueError(receipt['error'])
-        if receipt.get('status')!='checked'or receipt.get('plan_sha256')!=identity(package):raise ValueError('plan checker binding mismatch')
+        if receipt.get('status')!='checked'or receipt.get('request_sha256',receipt.get('plan_sha256'))!=identity(package):raise ValueError('plan checker binding mismatch')
         self.reused_steps+=receipt.get('reused_steps',0)
         state=receipt['state'];state['capability']=receipt.get('capability')or dict(emittable=True);self.admissions[key]=state
         if len(self.admissions)>128:self.admissions.pop(next(iter(self.admissions)))
