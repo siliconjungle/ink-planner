@@ -193,7 +193,7 @@ def condition_proof(goal, catalogue, depth=0):
     return 'Normalize'
 
 
-def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_costs=None, core_program=None, diverse=True):
+def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_costs=None, core_program=None, diverse=True, policy=None, neighbourhood=None):
     objects = catalogue['objects']
     # Index on the typed root constructor. New operation combinations require
     # data entries, never a new matching case. Root-variable laws are universal.
@@ -243,13 +243,16 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
     frontier = [(initial, start, [])]; best = frontier[0]; seen = {key(start)}
     rejected = 0; checked = 0; exhausted = False
     generated = 0
-    for _ in range(rounds):
+    for round_index in range(rounds):
         pending = []
         pending_seen = set()
+        hinted = set()
         for _, bodies, applications in frontier:
             for name, body in bodies.items():
                 for path, target in positions(body):
                     ids = index.get(shape(target), []) + index.get((key(target['sort']), '*'), [])
+                    if neighbourhood is not None:
+                        hinted.update(set(neighbourhood.hints(target)).intersection(ids))
                     for ident in ids:
                         law = objects[ident]; args = {}
                         if not match(law['from'], target, law['params'], args): continue
@@ -285,12 +288,19 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
                     preferred.append(winner)
                     used.add(winner[3])
             pending = preferred + [x for x in pending if x not in preferred]
+        if policy is not None:
+            pending = policy.order(pending, initial, round_index)
+        if neighbourhood is not None:
+            pending = neighbourhood.order(pending, hinted, round_index)
         candidates = []
         for score, updated, proposal, fingerprint, law, args in pending:
             if fingerprint in seen: continue
             if checked >= budget: exhausted = True; break
             checked += 1
-            if not check(proposal):
+            candidate = (score, updated, proposal, fingerprint, law, args)
+            def admit(proof):
+                return check(proof) if policy is None else policy.check(candidate, initial, check, proof)
+            if not admit(proposal):
                 rejected += 1
                 step = proposal[-1]
                 alternatives = [condition_proof({'from': substitute(c['from'], args),
@@ -300,7 +310,7 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
                 if checked >= budget: exhausted = True; break
                 proposal = proposal[:-1] + [dict(step, premises=alternatives)]
                 checked += 1
-                if not check(proposal): rejected += 1; continue
+                if not admit(proposal): rejected += 1; continue
             seen.add(fingerprint)
             state = (score, updated, proposal)
             candidates.append(state)
@@ -475,7 +485,26 @@ def main():
     a.add_argument('--rounds',type=int,default=12,help='maximum beam expansion rounds (0..64)')
     a.add_argument('--cache-dir',type=Path,help='bounded search-hint cache; every hit is proof-checked again')
     a.add_argument('--cache-context',type=Path,help='additional exact target/toolchain/workload/profile bytes in the cache key')
+    a.add_argument('--search-strategy',choices=['baseline','stochastic','learned'],default='baseline')
+    a.add_argument('--search-seed',type=int,default=0)
+    a.add_argument('--search-restarts',type=int,default=4)
+    a.add_argument('--search-model',type=Path)
+    a.add_argument('--search-trace',type=Path,help='offline admission observations; never proof authority')
+    a.add_argument('--selfhost-endpoint',help='optional loopback compiled-Ink score service; errors retain local ranking')
+    a.add_argument('--discovery-accelerator',action='store_true',help='opt-in authenticated in-memory Bloom/learned discovery index')
+    a.add_argument('--ann-hints',action='store_true',help='opt-in HNSW structural neighbourhood ordering; requires optional ann extra')
     args = a.parse_args()
+    if not 1<=args.search_restarts<=16:a.error('search restarts must be between 1 and 16')
+    from ink_planner.search_policy import validate_model, search_restarts
+    search_model=validate_model(json.loads(args.search_model.read_text())) if args.search_model else None
+    if args.search_strategy=='learned' and search_model is None:a.error('learned search requires --search-model')
+    search_options=None if args.search_strategy=='baseline' else dict(strategy=args.search_strategy,seed=args.search_seed,restarts=args.search_restarts,model=search_model,selfhost_endpoint=args.selfhost_endpoint)
+    if args.ann_hints:search_options={**(search_options or {}),'ann_hints':True,'ann_schema':'ink-structural-sketch-v1-64'}
+    if args.selfhost_endpoint and args.search_strategy=='baseline':a.error('selfhost endpoint requires stochastic or learned search')
+    if args.selfhost_endpoint:
+        from ink_planner.selfhost import Scorer
+        scorer=Scorer(args.selfhost_endpoint)
+    else:scorer=None
     if not 0 <= args.rounds <= 64: a.error('rounds must be between 0 and 64')
     operation_costs=load_cost_model(args.cost_model) if args.cost_model else None
     cost_model_receipt=None if args.cost_model is None else dict(path=str(args.cost_model.resolve()),sha256=hashlib.sha256(args.cost_model.read_bytes()).hexdigest(),scope='Untrusted compile-time search hypothesis, not measured runtime')
@@ -488,11 +517,14 @@ def main():
     snapshot = args.snapshot.resolve()
     storage = snapshot.parent.parent if snapshot.parent.name == 'snapshots' else snapshot.parent
     store = Store(args.knowledge_root or storage.parent, snapshot)
+    if args.discovery_accelerator:
+        from ink_knowledge.discovery_accelerator import enable
+        enable(store)
     cache_key=None
     source_snapshot=store.snapshot
     if args.cache_dir:
         from ink_planner import plan_cache
-        cache_key=plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context)
+        cache_key=plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context,search_options)
         cached=plan_cache.load(args.cache_dir,cache_key)
         if cached is not None:
             envelope=json.loads(cached)
@@ -509,10 +541,13 @@ def main():
                 replay=subprocess.run([compiler,'check-selection',args.core.resolve(),path],capture_output=True,text=True)
                 if replay.returncode==0:
                     if hashlib.sha256(compiler.read_bytes()).hexdigest()!=original_hash:raise ValueError('compiler changed during cache replay')
-                    if plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context)!=cache_key:raise ValueError('compilation inputs changed during cache replay')
+                    if plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context,search_options)!=cache_key:raise ValueError('compilation inputs changed during cache replay')
                     args.o.parent.mkdir(parents=True,exist_ok=True)
                     package=json.loads(cached)
                     args.o.write_text(json.dumps(package,separators=(',',':'))+'\n' if args.compact_output else json.dumps(package,indent=2)+'\n')
+                    if args.search_trace:
+                        args.search_trace.parent.mkdir(parents=True,exist_ok=True)
+                        args.search_trace.write_text(json.dumps(dict(schema=1,source=package['input_core_sha256'],compiler_sha256=original_hash,snapshot=source_snapshot,cache_hit=True,rows=[]),indent=2)+'\n')
                     print(json.dumps(dict(compiler_sha256=original_hash,cost_model=cost_model_receipt,cache=dict(key=cache_key,hit=True,authority='fresh local proof replay',evidence=json.loads(replay.stdout)))))
                     return
     with tempfile.TemporaryDirectory(prefix='ink-semantic-search-') as tmp:
@@ -547,6 +582,10 @@ def main():
             roots = sorted(set(roots) | set(generated))
         def law(e):return dict(schema=1,semantics=e['semantics'],dependencies=e['dependencies'],**e['payload'])
         catalogue=dict(roots=sorted(roots),objects={i:law(e) for i,e in discovery.items()})
+        neighbourhood=None
+        if args.ann_hints:
+            from ink_planner.neighbourhood import Neighbourhood
+            neighbourhood=Neighbourhood(catalogue)
         package = dict(schema=1, semantics='ink-evidence-v1', input_core_sha256=subject['input_core_sha256'],
                        knowledge=None, applications=[])
         # Discovery is untrusted: do not spend one aggregate kernel budget on
@@ -556,13 +595,20 @@ def main():
         check = checker.check
         try:
             if not check([]): raise ValueError('compiler rejected the unchanged input')
-            applications, receipt = search(subject, catalogue, check, args.budget,
-                operation_costs=operation_costs, rounds=args.rounds, core_program=core_program)
+            applications, receipt = search_restarts(search, subject, catalogue, check, budget=args.budget,
+                strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, model=search_model,scorer=scorer,
+                operation_costs=operation_costs, rounds=args.rounds, core_program=core_program,neighbourhood=neighbourhood)
+            if neighbourhood is not None:receipt['neighbourhood']=neighbourhood.receipt
             receipt['round_limit'] = args.rounds
             receipt['checker_sessions'] = dict(attempts=checker.session_attempts, admission_batches=checker.admission_batches, newly_admitted=checker.newly_admitted, rejected_closures=checker.rejected_closures, checked_roots=sorted(checker.checked_roots))
+            if scorer is not None:receipt['selfhost']=dict(endpoint=scorer.endpoint,weights=list(scorer.weights),receipts=scorer.receipts,scope='exact word scores used only as search hints')
             receipt['admission'] = 'each proposed application list and final output checked with its exact selected-law/premise dependency closure; unused discovery objects are not mathematical authority'
             package['applications'] = applications
             if not check(applications): raise ValueError('compiler rejected final selection')
+            if args.search_trace:
+                args.search_trace.parent.mkdir(parents=True,exist_ok=True)
+                args.search_trace.write_text(json.dumps(dict(schema=1,source=subject['input_core_sha256'],compiler_sha256=original_hash,
+                    snapshot=store.snapshot_id,policy=receipt['search_policy'],rows=receipt['training_rows']),indent=2)+'\n')
         finally:
             checker.close()
         # Even non-compact formatting must not resupply unused discovery roots
@@ -571,7 +617,7 @@ def main():
         args.o.parent.mkdir(parents=True, exist_ok=True); args.o.write_text(json.dumps(package, separators=(',',':')) + '\n' if args.compact_output else json.dumps(package, indent=2) + '\n')
     if hashlib.sha256(compiler.read_bytes()).hexdigest() != original_hash: raise ValueError('compiler changed during search')
     if cache_key:
-        if plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context)!=cache_key:raise ValueError('compilation inputs changed during search')
+        if plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context,search_options)!=cache_key:raise ValueError('compilation inputs changed during search')
         plan_cache.save(args.cache_dir,cache_key,json.dumps(dict(schema=1,key=cache_key,source_snapshot=source_snapshot,package=package),separators=(',',':')).encode()+b'\n')
     print(json.dumps(dict(compiler_sha256=original_hash, database=dict(snapshot_sha256=store.snapshot_id,source_snapshot_sha256=original_snapshot_id,entries=len(roots),loaded_objects=len(discovery),producers=producer_receipts), cost_model=cost_model_receipt, **receipt)))
 if __name__ == '__main__': main()

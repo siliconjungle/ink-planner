@@ -5,7 +5,7 @@ from pathlib import Path
 MAX_BYTES=16_000_000
 
 
-def fingerprint(compiler, core, snapshot, cost_model, budget, rounds, context=None):
+def fingerprint(compiler, core, snapshot, cost_model, budget, rounds, context=None, search_options=None):
     from importlib.resources import files
     import ink_knowledge, producers
     def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -18,6 +18,7 @@ def fingerprint(compiler, core, snapshot, cost_model, budget, rounds, context=No
     key=dict(schema=1,compiler=digest(compiler),core=digest(core),snapshot=digest(snapshot),
              cost_model=None if cost_model is None else digest(cost_model),budget=budget,rounds=rounds,
              context=None if context is None else digest(context),code=code,python=list(sys.version_info[:3]))
+    if search_options is not None:key['search_options']=search_options
     return hashlib.sha256(json.dumps(key,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 
