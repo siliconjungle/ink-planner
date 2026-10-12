@@ -18,6 +18,12 @@ class RecipeStreams(unittest.TestCase):
             events=list(run(jobs,2,time.monotonic()+5,3));rows=[(j['key'],e['raw'])for j,e in events if e['kind']=='line']
             self.assertLess(rows.index(('1',b'fast-final')),rows.index(('0',b'slow-final')))
             self.assertTrue(all(e['complete']for _,e in events if e['kind']=='done'))
+            # Completion diagnostics are persisted inside canonical receipts.
+            from decimal import Decimal
+            from ink_knowledge import canonical
+            done=[e for _,e in events if e['kind']=='done']
+            self.assertTrue(all(isinstance(e['elapsed_seconds'],str)and Decimal(e['elapsed_seconds'])>=0 for e in done))
+            canonical(dict(notes=done))
     def test_deadline_closes_nested_processes_even_after_leader_exits(self):
         if os.name!='posix':self.skipTest('POSIX group lifecycle')
         with tempfile.TemporaryDirectory()as tmp:
@@ -44,6 +50,8 @@ class RecipeStreams(unittest.TestCase):
             events=list(run(jobs,1,time.monotonic()+5,.15))
             self.assertIn(b'proposal',[e['raw']for _,e in events if e['kind']=='line'])
             self.assertEqual(events[-1][1]['reason'],'proposal process time budget')
+            from ink_knowledge import canonical
+            canonical(dict(notes=[events[-1][1]]))
 
 class ReapedGroup(unittest.TestCase):
     def test_os_refusal_on_reaped_group_does_not_abort_selection(self):
