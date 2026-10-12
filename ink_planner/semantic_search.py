@@ -584,6 +584,9 @@ def main():
     snapshot = args.snapshot.resolve()
     storage = snapshot.parent.parent if snapshot.parent.name == 'snapshots' else snapshot.parent
     store = Store(args.knowledge_root or storage.parent, snapshot)
+    # Cold/relocated installations have no disposable index. Build it once
+    # before producers issue repeated queries; proof bytes still replay below.
+    store.ensure_index()
     if args.discovery_accelerator:
         from ink_knowledge.discovery_accelerator import enable
         enable(store)
