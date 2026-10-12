@@ -85,6 +85,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--compiler', type=Path, required=True)
     p.add_argument('--source', type=Path, required=True)
+    p.add_argument('--core', action='store_true')
+    p.add_argument('--contract-proofs', type=Path)
     p.add_argument('--knowledge-root', type=Path, required=True)
     p.add_argument('--emit-target', choices=TARGETS, required=True)
     p.add_argument('-o', '--output', type=Path, required=True)
@@ -109,7 +111,8 @@ def main():
     compiler_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix='ink-implementation-selection-') as temporary:
         scratch = Path(temporary); core = scratch/'core.json'
-        source = json.loads(invoke(compiler, ['emit-core', source_path, '-o', core], a.check_timeout_seconds))['core_sha256']
+        source_options=([ '--core'] if a.core else [])+(['--contract-proofs',a.contract_proofs] if a.contract_proofs else [])
+        source = json.loads(invoke(compiler, ['emit-core', source_path, '-o', core,*source_options], a.check_timeout_seconds))['core_sha256']
         if a.replay:
             raw = read(a.replay, MAX_VIEW_BYTES)
             receipt = json.loads(read(Path(str(a.replay)+'.selection.json'), 1_000_000))
@@ -125,7 +128,7 @@ def main():
             if raw != canonical(package)+b'\n': raise ValueError('selected package differs from pinned candidate')
             staged = scratch/'package.json'
             check_package(compiler, source_path, core, package, staged, a.check_timeout_seconds,a.emit_target)
-            args = emission_args(package['semantics'], source_path, staged, a.emit_target, a.output)
+            args = emission_args(package['semantics'], source_path, staged, a.emit_target, a.output)+source_options
             if a.zig and a.emit_target in ('wgpu', 'webgpu'): args += ['--zig', a.zig]
             invoke(compiler, args, 600)
             print(json.dumps(dict(status='checked', selected=receipt['selected'], emission_target=a.emit_target)))

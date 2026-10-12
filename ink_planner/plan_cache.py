@@ -5,7 +5,7 @@ from pathlib import Path
 MAX_BYTES=16_000_000
 
 
-def fingerprint(compiler, core, snapshot, cost_model, budget, rounds, context=None,search_options=None):
+def fingerprint(compiler, core, snapshot, cost_model, budget, rounds, context=None, search_options=None):
     from importlib.resources import files
     import ink_knowledge, producers
     def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()

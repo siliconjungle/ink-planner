@@ -21,7 +21,10 @@ class SelectedClosureSessions(unittest.TestCase):
                 return ids[start:start+kwargs['limit']]
         store=Paged()
         self.assertEqual(discover_roots(store, [{'Value':'U32'}]), set(ids))
-        self.assertEqual([r['limit'] for r in store.requests], [1024,1024])
+        self.assertEqual([r['limit'] for r in store.requests], [1024,1024,1024,1024])
+        self.assertEqual([r['semantics'] for r in store.requests],
+                         ['ink-conditional-laws-v1'] * 2 + ['ink-general-laws-v1'] * 2)
+        self.assertEqual(store.requests[3]['after'], ids[1023])
         self.assertEqual(store.requests[1]['after'], ids[1023])
 
     def test_discovery_does_not_construct_one_limited_authority_bundle(self):
@@ -105,3 +108,29 @@ for line in sys.stdin:
                 self.assertTrue(checker.check([{'law':'d'}]));self.assertEqual(checker.session_attempts,2)
                 self.assertTrue(checker.check([{'law':'b'}]))
             finally:checker.close()
+
+
+class SessionRequestLease(unittest.TestCase):
+    def test_admissions_and_checks_rotate_the_session_together(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            compiler = directory / 'checker.py'
+            compiler.write_text("""#!/usr/bin/env python3
+import json,sys
+print(json.dumps({'ready':True,'incremental':True}),flush=True)
+for _,line in zip(range(4),sys.stdin):
+    request=json.loads(line)
+    print(json.dumps({'admitted':True,'added':1} if isinstance(request,dict)
+                     else {'checked':True}),flush=True)
+""")
+            compiler.chmod(0o755)
+            checker = SelectionChecker(compiler,directory/'input.core',Store(),directory)
+            checker.MAX_SESSION_REQUESTS = 4
+            try:
+                for i in range(20):
+                    self.assertTrue(checker.check([{'law':f'root-{i}'}]))
+                self.assertGreater(checker.session_attempts,1)
+                self.assertGreater(checker.admission_batches,0)
+                self.assertTrue(all(n<=4 for n in checker.session_requests.values()))
+            finally:
+                checker.close()

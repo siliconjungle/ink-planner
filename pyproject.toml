@@ -7,8 +7,12 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = ["ink-knowledge==0.1.0"]
 description = "Untrusted proof-producing optimisation and execution planning for Ink"
+[project.optional-dependencies]
+ann = ["hnswlib==0.8.0", "numpy>=1.24,<3"]
 [tool.setuptools]
 packages = ["ink_planner"]
+[tool.setuptools.package-data]
+ink_planner = ["kernels/*.ink", "hosts/*.mjs"]
 [project.scripts]
 ink-plan = "ink_planner.semantic_search:main"
 ink-route = "ink_planner.source_routing:main"
@@ -16,6 +20,11 @@ ink-select-route = "ink_planner.route_selection:main"
 ink-select-representation = "ink_planner.representation_selection:main"
 ink-select-implementation = "ink_planner.implementation_selection:main"
 ink-select-physical = "ink_planner.physical_selection:main"
+ink-fit-search = "ink_planner.search_policy:main"
+ink-autotune = "ink_planner.autotune:main"
+ink-synthesize = "ink_planner.synthesis:main"
+ink-plan-parallel = "ink_planner.parallel_search:main"
+ink-plan-adaptive = "ink_planner.adaptive_search:main"
 
 ink-compile-plan = "ink_planner.compiled_planning:main"
 
