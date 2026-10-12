@@ -116,7 +116,7 @@ class Policy:
 
 
 def search_restarts(search, subject, catalogue, check, *, budget=128, restarts=4, strategy='stochastic', seed=0, model=None, scorer=None, **options):
-    if not 0 <= budget <= 4096 or not 1 <= restarts <= 16: raise ValueError('restart proof budget')
+    if not 0 <= budget <= (1_000_000 if strategy=='baseline' else 4096) or not 1 <= restarts <= 16: raise ValueError('restart proof budget')
     if strategy not in ('baseline','stochastic','learned'): raise ValueError('search strategy')
     if strategy=='learned' and model is None: raise ValueError('learned search requires a model')
     if model is not None: validate_model(model)
@@ -126,6 +126,7 @@ def search_restarts(search, subject, catalogue, check, *, budget=128, restarts=4
         quota=remaining//(restarts-i)
         policy=None if strategy=='baseline' or (i==0 and restarts>1) else Policy(strategy,seed+i,model,scorer=scorer)
         run_options=dict(options)
+        if 'engine_strategy' in run_options:run_options['strategy']=run_options.pop('engine_strategy')
         if i==0 and restarts>1:run_options['neighbourhood']=None
         apps,receipt=search(subject,catalogue,check,budget=quota,policy=policy,**run_options)
         remaining-=receipt['attempts']; receipts.append(receipt)

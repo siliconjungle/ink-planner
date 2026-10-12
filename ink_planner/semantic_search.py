@@ -7,6 +7,7 @@ import argparse
 import copy
 import hashlib
 import json
+import time
 import subprocess
 import tempfile
 from pathlib import Path
@@ -169,12 +170,20 @@ def _cost(t,operation_costs):
 
 def key(v): return json.dumps(v, sort_keys=True, separators=(',', ':'))
 
-def condition_proof(goal, catalogue, depth=0):
+def condition_proof(goal, catalogue, depth=0, active=None, work=None):
     """General bounded proof production: instantiate a checked lemma, or lift
     child proofs through an unchanged operator. Normalization is the fallback.
     The checker, including actual branch facts, remains the only authority.
     """
-    if depth >= 3: return 'Normalize'
+    active=set() if active is None else active
+    work=[4096] if work is None else work
+    fingerprint=key(goal);work[0]-=1
+    # Certificates are proposals until the final selection checker replays their
+    # proof under the actual source environment and complete dependency view.
+    for fact in catalogue.get('certificates',[]):
+        if fact['goal']==goal:return fact['proof']
+    if work[0]<0 or depth>=128 or fingerprint in active:return 'Normalize'
+    active=active|{fingerprint}
     # Supporting lemmas need not be enabled as rewrite roots. The compiler
     # admits only the dependency closure, so unreachable objects cannot confer authority.
     for ident, law in catalogue['objects'].items():
@@ -182,18 +191,21 @@ def condition_proof(goal, catalogue, depth=0):
         if match(law['from'], goal['from'], law['params'], args) and set(args) == set(law['params']):
             if substitute(law['to'], args) == goal['to']:
                 premises = [condition_proof({'from': substitute(c['from'], args), 'to': substitute(c['to'], args)},
-                                            catalogue, depth + 1) for c in law['conditions']]
+                                            catalogue, depth + 1, active, work) for c in law['conditions']]
                 return {'Use': dict(law=ident, arguments=dict(sorted(args.items())), premises=premises)}
     left, right = goal['from'], goal['to']; ln, rn = left['node'], right['node']
     if left['sort'] == right['sort'] and isinstance(ln, dict) and isinstance(rn, dict) and 'Op' in ln and 'Op' in rn:
         if ln['Op'][0] == rn['Op'][0] and len(children(left)) == len(children(right)):
-            proofs = [condition_proof({'from': a, 'to': b}, catalogue, depth + 1)
+            proofs = [condition_proof({'from': a, 'to': b}, catalogue, depth + 1, active, work)
                       for a, b in zip(children(left), children(right))]
             if any(p != 'Normalize' for p in proofs): return {'Congruence': proofs}
     return 'Normalize'
 
 
-def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_costs=None, core_program=None, diverse=True, policy=None, neighbourhood=None):
+def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operation_costs=None, core_program=None, diverse=True, strategy="memo", memory_bytes=256_000_000, time_seconds=600, alternatives=None, policy=None, neighbourhood=None):
+    if strategy not in {"memo","beam"}:raise ValueError("unknown search strategy")
+    if budget<0 or width<1 or memory_bytes<1 or time_seconds<0 or (rounds is not None and rounds<0):raise ValueError("search budgets")
+    started=time.monotonic();deferred=[];memo_edges=[];iteration=0;memory_exhausted=False;timed_out=False;prefix_states={}
     objects = catalogue['objects']
     # Index on the typed root constructor. New operation combinations require
     # data entries, never a new matching case. Root-variable laws are universal.
@@ -241,12 +253,17 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
         return profile_cache[fingerprint]
     start = subject['functions']; initial = score_bodies(start)
     frontier = [(initial, start, [])]; best = frontier[0]; seen = {key(start)}
+    prefix_states[hashlib.sha256(key([]).encode()).hexdigest()]=key(start)
     rejected = 0; checked = 0; exhausted = False
-    generated = 0
-    for round_index in range(rounds):
-        pending = []
-        pending_seen = set()
-        hinted = set()
+    generated = 0;memo_bytes=len(key(start).encode());dropped=0
+    while rounds is None or iteration<rounds:
+        if time.monotonic()-started>=time_seconds:timed_out=True;break
+        iteration+=1
+        pending = deferred;old_pending=len(deferred);deferred=[]
+        pending_seen = {key(x[2])for x in pending}
+        pending_bytes=sum(len(x[3].encode())+len(key(x[2]).encode())for x in pending)
+        round_index=iteration-1
+        hinted=set()
         for _, bodies, applications in frontier:
             for name, body in bodies.items():
                 for path, target in positions(body):
@@ -267,14 +284,17 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
                         proposal = applications + [step]
                         proposal_key = key(proposal)
                         if proposal_key in pending_seen: continue
-                        pending_seen.add(proposal_key)
+                        size=len(fingerprint.encode())+len(proposal_key.encode())
+                        if memo_bytes+pending_bytes+size>memory_bytes:
+                            memory_exhausted=True;dropped+=1;continue
+                        pending_bytes+=size;pending_seen.add(proposal_key)
                         score = score_bodies(updated)
                         pending.append((score, updated, proposal, fingerprint, law, args))
         # Rank untrusted proposals before spending bounded checker work. Only
         # the best `width` admitted bodies can enter the next beam; checking
         # lower-ranked alternatives after filling it cannot improve that beam.
         # A rejection never marks a body seen or hides another proof of it.
-        generated += len(pending)
+        generated += len(pending)-old_pending
         pending.sort(key=lambda x: (x[0], len(x[2]), key(x[1])))
         if diverse and pending and width > 1:
             # Keep the cheapest proposal, then minima of different work profiles.
@@ -293,9 +313,10 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
         if neighbourhood is not None:
             pending = neighbourhood.order(pending, hinted, round_index)
         candidates = []
-        for score, updated, proposal, fingerprint, law, args in pending:
+        processed=0
+        for processed, (score, updated, proposal, fingerprint, law, args) in enumerate(pending,1):
             if fingerprint in seen: continue
-            if checked >= budget: exhausted = True; break
+            if checked >= budget: exhausted = True; processed-=1; break
             checked += 1
             candidate = (score, updated, proposal, fingerprint, law, args)
             def admit(proof):
@@ -303,23 +324,37 @@ def search(subject, catalogue, check, budget=128, width=4, rounds=12, operation_
             if not admit(proposal):
                 rejected += 1
                 step = proposal[-1]
-                alternatives = [condition_proof({'from': substitute(c['from'], args),
+                premise_alternatives = [condition_proof({'from': substitute(c['from'], args),
                                                  'to': substitute(c['to'], args)}, catalogue)
                                 for c in law['conditions']]
-                if alternatives == step['premises']: continue
+                if premise_alternatives == step['premises']: continue
                 if checked >= budget: exhausted = True; break
-                proposal = proposal[:-1] + [dict(step, premises=alternatives)]
+                proposal = proposal[:-1] + [dict(step, premises=premise_alternatives)]
                 checked += 1
                 if not admit(proposal): rejected += 1; continue
             seen.add(fingerprint)
+            memo_bytes+=len(fingerprint.encode())+len(key(proposal).encode())
+            if alternatives is not None:alternatives.append(proposal)
+            parent=prefix_states[hashlib.sha256(key(proposal[:-1]).encode()).hexdigest()]
+            prefix_states[hashlib.sha256(key(proposal).encode()).hexdigest()]=fingerprint
+            memo_edges.append(dict(from_state=parent,to_state=fingerprint,law=proposal[-1]["law"],depth=len(proposal)))
             state = (score, updated, proposal)
             candidates.append(state)
             if score < best[0]: best = state
             if len(candidates) >= width: break
-        if not candidates or exhausted: break
+        if strategy=="memo":
+            retained=0
+            for item in pending[processed:]:
+                if item[3]in seen:continue
+                size=len(item[3].encode())+len(key(item[2]).encode())
+                if memo_bytes+retained+size>memory_bytes:memory_exhausted=True;break
+                deferred.append(item);retained+=size
+        if exhausted or memory_exhausted:break
+        if not candidates and not deferred:break
         frontier = candidates
     receipt = dict(initial_cost=initial, selected_cost=best[0], attempts=checked,
                    rejected=rejected, generated_proposals=generated, exhausted=exhausted, estimate='structural; not measured runtime')
+    receipt["memo"]=dict(strategy=strategy,states=len(seen),edges=len(memo_edges),deferred=len(deferred),rounds=iteration,memory_exhausted=memory_exhausted,timed_out=timed_out,retained_memo_bytes=memo_bytes,dropped_proposals=dropped,scope="Exact typed term states; admitted edges only; no hash grants proof authority")
     receipt['beam_diversity'] = dict(enabled=diverse, dimensions=list(dimensions),
         initial=profile(start), selected=profile(best[1]), scope='Untrusted source-work hypotheses; no timing or proof authority')
     if component_model is not None:
@@ -479,10 +514,16 @@ def main():
     a = argparse.ArgumentParser(); a.add_argument('--compiler', type=Path, required=True)
     a.add_argument('--core', type=Path, required=True); a.add_argument('--snapshot', type=Path, required=True)
     a.add_argument('--knowledge-root', type=Path)
-    a.add_argument('-o', type=Path, required=True); a.add_argument('--budget', type=int, default=128)
+    a.add_argument('-o', type=Path, required=True); a.add_argument('--budget', type=int, default=4096)
     a.add_argument('--cost-model',type=Path,help='Untrusted JSON operation prices; default structural estimate when omitted')
     a.add_argument('--compact-output',action='store_true',help='Write the selected proof closure without JSON indentation')
-    a.add_argument('--rounds',type=int,default=12,help='maximum beam expansion rounds (0..64)')
+    a.add_argument('--rounds',type=int,default=None,help='optional expansion limit; omitted searches to a fixed point or resource budget')
+    a.add_argument('--width',type=int,default=16)
+    a.add_argument('--strategy',choices=['memo','beam'],default='memo')
+    a.add_argument('--memory-bytes',type=int,default=256_000_000)
+    a.add_argument('--time-seconds',type=int,default=600)
+    a.add_argument('--alternatives',type=Path,help='write every admitted typed alternative for layered planning')
+    a.add_argument('--properties',type=Path,help='source-bound property packets; final checker replays every reused premise')
     a.add_argument('--cache-dir',type=Path,help='bounded search-hint cache; every hit is proof-checked again')
     a.add_argument('--cache-context',type=Path,help='additional exact target/toolchain/workload/profile bytes in the cache key')
     a.add_argument('--search-strategy',choices=['baseline','stochastic','learned'],default='baseline')
@@ -505,12 +546,13 @@ def main():
         from ink_planner.selfhost import Scorer
         scorer=Scorer(args.selfhost_endpoint)
     else:scorer=None
-    if not 0 <= args.rounds <= 64: a.error('rounds must be between 0 and 64')
+    if args.rounds is not None and args.rounds<0: a.error('rounds must be nonnegative')
+    if not 1<=args.width<=4096 or not 1<=args.memory_bytes<=16_000_000_000 or not 0<=args.time_seconds<=86400:a.error('search resource budget')
     operation_costs=load_cost_model(args.cost_model) if args.cost_model else None
     cost_model_receipt=None if args.cost_model is None else dict(path=str(args.cost_model.resolve()),sha256=hashlib.sha256(args.cost_model.read_bytes()).hexdigest(),scope='Untrusted compile-time search hypothesis, not measured runtime')
     if cost_model_receipt is not None:
         cost_model_receipt['model' if isinstance(operation_costs, TargetCostModel) else 'operation_costs'] = operation_costs.describe() if isinstance(operation_costs, TargetCostModel) else operation_costs
-    if not 0 <= args.budget <= 4096: a.error('budget must be between 0 and 4096')
+    if not 0 <= args.budget <= 1_000_000: a.error('budget must be between 0 and 1000000')
     compiler = args.compiler.resolve(); original_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     from ink_knowledge import Store
     from ink_knowledge.proposals import generate
@@ -520,9 +562,10 @@ def main():
     if args.discovery_accelerator:
         from ink_knowledge.discovery_accelerator import enable
         enable(store)
+    search_options={**(search_options or {}),'engine':dict(width=args.width,strategy=args.strategy,memory_bytes=args.memory_bytes,time_seconds=args.time_seconds)}
     cache_key=None
     source_snapshot=store.snapshot
-    if args.cache_dir:
+    if args.cache_dir and not args.alternatives and not args.properties:
         from ink_planner import plan_cache
         cache_key=plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context,search_options)
         cached=plan_cache.load(args.cache_dir,cache_key)
@@ -581,7 +624,15 @@ def main():
             store = Store.publish(tmp / 'generated-knowledge', discovery.values())
             roots = sorted(set(roots) | set(generated))
         def law(e):return dict(schema=1,semantics=e['semantics'],dependencies=e['dependencies'],**e['payload'])
-        catalogue=dict(roots=sorted(roots),objects={i:law(e) for i,e in discovery.items()})
+        certificates=[]
+        if args.properties:
+            for packet in json.loads(args.properties.read_bytes()):
+                path=tmp/'property.json';path.write_text(json.dumps(packet))
+                admitted=json.loads(subprocess.check_output([compiler,'check-properties',args.core.resolve(),path,'--core'],text=True))
+                for fact,goal in zip(packet['facts'],admitted['equations']):certificates.append(dict(goal=goal,proof=fact['proof']))
+                discovery.update(packet['knowledge']['objects'])
+            store=Store.publish(tmp/'with-properties',discovery.values())
+        catalogue=dict(roots=sorted(roots),objects={i:law(e) for i,e in discovery.items() if e['kind']=='rewrite'},certificates=certificates)
         neighbourhood=None
         if args.ann_hints:
             from ink_planner.neighbourhood import Neighbourhood
@@ -595,9 +646,11 @@ def main():
         check = checker.check
         try:
             if not check([]): raise ValueError('compiler rejected the unchanged input')
+            alternatives=[]
             applications, receipt = search_restarts(search, subject, catalogue, check, budget=args.budget,
                 strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, model=search_model,scorer=scorer,
-                operation_costs=operation_costs, rounds=args.rounds, core_program=core_program,neighbourhood=neighbourhood)
+                operation_costs=operation_costs, rounds=args.rounds, core_program=core_program,neighbourhood=neighbourhood,engine_strategy=args.strategy,
+                width=args.width,memory_bytes=args.memory_bytes,time_seconds=args.time_seconds,alternatives=alternatives)
             if neighbourhood is not None:receipt['neighbourhood']=neighbourhood.receipt
             receipt['round_limit'] = args.rounds
             receipt['checker_sessions'] = dict(attempts=checker.session_attempts, admission_batches=checker.admission_batches, newly_admitted=checker.newly_admitted, rejected_closures=checker.rejected_closures, checked_roots=sorted(checker.checked_roots))
@@ -614,6 +667,11 @@ def main():
         # Even non-compact formatting must not resupply unused discovery roots
         # to a later replay's single fixed proof-work budget.
         package['knowledge'] = store.bundle(selection_roots(applications))
+        if args.alternatives:
+            args.alternatives.parent.mkdir(parents=True,exist_ok=True)
+            with args.alternatives.open('w') as output:
+                for alternative in alternatives:
+                    output.write(json.dumps(dict(package,applications=alternative,knowledge=store.bundle(selection_roots(alternative))),separators=(',',':'))+'\n')
         args.o.parent.mkdir(parents=True, exist_ok=True); args.o.write_text(json.dumps(package, separators=(',',':')) + '\n' if args.compact_output else json.dumps(package, indent=2) + '\n')
     if hashlib.sha256(compiler.read_bytes()).hexdigest() != original_hash: raise ValueError('compiler changed during search')
     if cache_key:

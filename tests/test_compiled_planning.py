@@ -1,0 +1,38 @@
+import unittest
+from ink_planner.compiled_planning import explore
+
+class RecursivePlans(unittest.TestCase):
+    def test_revisits_layers_beyond_old_round_bound_and_stops_cycles(self):
+        initial=dict(steps=[])
+        def check(p):
+            value=0
+            for step in p['steps']:
+                if step['package']['from']!=value:raise ValueError('stale source')
+                value=step['package']['to']
+            return dict(source=str(value),physical=None,properties=[],representation=None,route=None)
+        def expand(state,_):
+            n=int(state['source'])
+            if n<80:yield dict(status='proposal',step=dict(kind='rewrite'if n%2 else'physical',package=dict(**{'from':n,'to':n+1})))
+            yield dict(status='proposal',step=dict(kind='rewrite',package=dict(**{'from':n,'to':0})))
+        states,receipt=explore(initial,expand,check,lambda s:-int(s['source']),budget=200,time_seconds=30)
+        self.assertIn('80',{s['source']for _,s in states.values()})
+        self.assertEqual(receipt['stop_reason'],'fixed-point')
+        self.assertEqual(len(states),81)
+    def test_rejected_proof_does_not_hide_a_valid_edge(self):
+        def check(p):
+            if p['steps']and p['steps'][-1]['package'].get('bad'):raise ValueError('false equality')
+            return dict(source='selected'if p['steps']else'baseline',physical=None,properties=[])
+        def expand(state,_):
+            if state['source']=='baseline':
+                for bad in [True,False]:yield dict(status='proposal',step=dict(kind='rewrite',package=dict(bad=bad)))
+        states,receipt=explore(dict(steps=[]),expand,check,lambda _:0,time_seconds=30)
+        self.assertEqual(len(states),2);self.assertEqual(len(receipt['rejected']),1)
+    def test_resource_exhaustion_keeps_admitted_baseline(self):
+        check=lambda p:dict(source=str(len(p['steps'])),physical=None,properties=[])
+        expand=lambda s,_:iter([dict(status='proposal',step=dict(kind='rewrite',package={}))])
+        for options in [dict(budget=0),dict(state_limit=1),dict(time_seconds=0),dict(memory_bytes=1)]:
+            states,receipt=explore(dict(steps=[]),expand,check,lambda _:0,**options)
+            self.assertEqual(len(states),1)
+            self.assertNotEqual(receipt['stop_reason'],'fixed-point')
+
+if __name__=='__main__':unittest.main()

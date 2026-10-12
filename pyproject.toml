@@ -25,3 +25,5 @@ ink-autotune = "ink_planner.autotune:main"
 ink-synthesize = "ink_planner.synthesis:main"
 ink-plan-parallel = "ink_planner.parallel_search:main"
 ink-plan-adaptive = "ink_planner.adaptive_search:main"
+
+ink-compile-plan = "ink_planner.compiled_planning:main"

@@ -84,7 +84,7 @@ class SearchProofAlternatives(unittest.TestCase):
         catalogue = {'roots': list(objects)[1:] + ['best'], 'objects': objects}
         subject = {'functions': {f'f{i:02}': source for i in range(15)}}
         apps, receipt = search(subject, catalogue, lambda _: True,
-                               budget=64, width=1, rounds=32)
+                               budget=64, width=1, rounds=32,strategy="beam")
         self.assertEqual(len(apps), 15)
         self.assertEqual(receipt['attempts'], 15)
         self.assertGreater(receipt['generated_proposals'], 300)
@@ -95,12 +95,51 @@ class SearchProofAlternatives(unittest.TestCase):
         import sys
         from pathlib import Path
         script = Path(__file__).resolve().parents[1] / 'plan.py'
-        for rounds in [-1, 65]:
+        for rounds in [-1]:
             p = subprocess.run([sys.executable, str(script), '--compiler', 'unused',
                 '--core', 'unused', '--snapshot', 'unused', '-o', 'unused',
                 '--rounds', str(rounds)], capture_output=True, text=True)
             self.assertEqual(p.returncode, 2)
-            self.assertIn('rounds must be between 0 and 64', p.stderr)
+            self.assertIn('rounds must be nonnegative', p.stderr)
+
+    def test_memo_keeps_a_costly_branch_after_the_beam_is_full(self):
+        x=variable('x');op=lambda n:dict(sort=x['sort'],node={'Op':[n,[x]]})
+        source=op('call:start');cheap=op('call:dead');barrier=op('call:barrier')
+        objects={'cheap':dict(params={'x':x['sort']},conditions=[],**{'from':source,'to':cheap}),
+                 'barrier':dict(params={'x':x['sort']},conditions=[],**{'from':source,'to':barrier}),
+                 'finish':dict(params={'x':x['sort']},conditions=[],**{'from':barrier,'to':x})}
+        args=({'functions':{'f':source}},{'roots':list(objects),'objects':objects},lambda _:True)
+        costs={'call:start':1000,'call:dead':1,'call:barrier':500}
+        old,_=search(*args,width=1,strategy='beam',operation_costs=costs)
+        new,receipt=search(*args,width=1,strategy='memo',operation_costs=costs)
+        self.assertEqual([a['law']for a in old],['cheap'])
+        self.assertEqual([a['law']for a in new],['barrier','finish'])
+        self.assertEqual(receipt['memo']['states'],4)
+
+    def test_premise_search_can_cross_more_than_three_supporting_lemmas(self):
+        from ink_planner.semantic_search import condition_proof
+        x=variable('x');op=lambda i:dict(sort=x['sort'],node={'Op':['call:q'+str(i),[x]]})
+        objects={str(i):dict(params={'x':x['sort']},**{'from':op(i),'to':x},conditions=[]if i==7 else[dict(**{'from':op(i+1),'to':x})])for i in range(8)}
+        proof=condition_proof(dict(**{'from':op(0),'to':x}),dict(objects=objects))
+        depth=0
+        while isinstance(proof,dict)and 'Use'in proof:
+            depth+=1;premises=proof['Use']['premises'];proof=premises[0]if premises else None
+        self.assertEqual(depth,8)
+
+    def test_admitted_alternatives_are_retained_even_when_not_cheapest(self):
+        x=variable('x');op=lambda n:dict(sort=x['sort'],node={'Op':[n,[x]]})
+        objects={n:dict(params={'x':x['sort']},conditions=[],**{'from':op('start'),'to':op(n)})for n in ['cheap','expensive']}
+        alternatives=[]
+        search({'functions':{'f':op('start')}},{'roots':list(objects),'objects':objects},lambda _:True,
+            operation_costs={'start':100,'cheap':1,'expensive':200},alternatives=alternatives)
+        self.assertEqual({a[-1]['law']for a in alternatives},{'cheap','expensive'})
+    def test_exact_property_certificate_is_reused_as_a_premise(self):
+        from ink_planner.semantic_search import condition_proof
+        x=variable('x');goal=dict(**{'from':dict(sort=x['sort'],node={'Op':['length',[x]]}),'to':x})
+        proof={'Use':dict(law='published-property',arguments={},premises=[])}
+        self.assertEqual(condition_proof(goal,dict(objects={},certificates=[dict(goal=goal,proof=proof)])),proof)
+        other=dict(goal,to=dict(sort=x['sort'],node={'Word':2}))
+        self.assertEqual(condition_proof(other,dict(objects={},certificates=[dict(goal=goal,proof=proof)])),'Normalize')
 
 
 class BinderSafeRebuilding(unittest.TestCase):
