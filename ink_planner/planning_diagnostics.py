@@ -1,0 +1,137 @@
+"""Explain recorded planning gates without granting rewrite or selection authority.
+
+Receipts are observations, not proofs. An unfinished search is never described
+as evidence that no applicable optimisation exists. Expected plan identities
+may come from a separately checked capability experiment; they are diagnostics
+only and are never passed to the planner as selections.
+"""
+import argparse
+from collections import Counter
+import json
+from pathlib import Path
+
+
+def exclusion_gate(reason):
+    text = str(reason).lower()
+    if 'memory' in text:
+        return 'memory_evidence'
+    if any(word in text for word in ('uncertainty', 'minimum', 'gain guard', 'no measured improvement')):
+        return 'profitability'
+    if any(word in text for word in ('missing', 'unmeasured', 'comparable', 'phase')):
+        return 'measurement_evidence'
+    return 'selection_other'
+
+
+def diagnose(receipt, expected=()):
+    if not isinstance(receipt, dict):
+        raise ValueError('planning receipt must be an object')
+    candidates = receipt.get('candidates', [])
+    selection = receipt.get('selection') or {}
+    acquisition = receipt.get('measurement_acquisition') or {}
+    report = acquisition.get('acquisition') or {}
+    guard = selection.get('uncertainty_guard') or {}
+    measured = Counter(row['measurement'] for row in report.get('rows', []) if 'measurement' in row)
+    evidence = selection.get('observations') or {}
+    failures = {r['measurement']: str(r.get('reason', 'measurement rejected'))
+                for r in acquisition.get('rejected', []) if 'measurement' in r}
+    excluded = dict(selection.get('excluded') or {})
+    excluded.update(guard.get('excluded') or {})
+    shortlisted = set((acquisition.get('shortlist') or {}).get('measured_indices', []))
+    has_shortlist = bool(acquisition.get('shortlist'))
+    selected = receipt.get('selected')
+    baseline = candidates[0].get('plan') if candidates else None
+    outcomes = []
+    for index, candidate in enumerate(candidates):
+        measurement = candidate.get('measurement')
+        has_measurement = bool(measured[measurement] or evidence.get(measurement)
+                               or measurement in (selection.get('total_ns') or {})
+                               or measurement in (guard.get('estimates') or {}))
+        capability = candidate.get('capability') or {}
+        reason = None
+        if candidate.get('plan') == selected:
+            gate = 'selected_baseline' if index == 0 else 'selected_alternative'
+            reason = selection.get('reason') or guard.get('reason')
+        elif capability.get('emittable') is False:
+            gate = 'backend_capability'
+            reason = capability.get('reason') or capability.get('reasons') or 'target cannot emit this admitted state'
+        elif measurement in failures:
+            gate, reason = 'measurement_failed', failures[measurement]
+        elif measurement in excluded:
+            reason = str(excluded[measurement])
+            gate = exclusion_gate(reason)
+        elif has_shortlist and index not in shortlisted:
+            gate = 'measurement_budget'
+            reason = (acquisition['shortlist'].get('unmeasured_reason')
+                      or 'outside the bounded measurement shortlist')
+        elif has_measurement:
+            gate = 'measured_not_selected'
+            reason = 'comparable evidence recorded; another implementation selected'
+        else:
+            gate = 'measurement_evidence'
+            reason = selection.get('reason') or (receipt.get('automatic_probe') or {}).get('reason') or 'no comparable measurement recorded'
+        outcomes.append(dict(index=index, candidate=candidate.get('candidate'), plan=candidate.get('plan'),
+                             measurement=measurement, gate=gate, reason=reason,
+                             measured=has_measurement, sample_rows=measured[measurement]))
+    recipes = {}
+    for row in receipt.get('recipes', []):
+        name = row.get('recipe', 'unknown')
+        summary = recipes.setdefault(name, dict(statuses=Counter(), results=Counter(), reasons=Counter()))
+        summary['statuses'][row.get('status', 'unknown')] += 1
+        summary['results'].update(row.get('counts') or {})
+        if row.get('reason'):
+            summary['reasons'][str(row['reason'])] += 1
+    recipes = {name: {k: dict(v) for k, v in summary.items()} for name, summary in sorted(recipes.items())}
+    recorded = {r['plan']: r for r in outcomes}
+    opportunities = []
+    for item in expected:
+        plan = item['plan']
+        if not isinstance(plan, str) or len(plan) != 64 or any(c not in '0123456789abcdef' for c in plan):
+            raise ValueError('expected plan identity must be a SHA-256 digest')
+        outcome = recorded.get(plan)
+        opportunities.append(dict(label=item.get('label'), plan=plan, reached=outcome is not None,
+                                  gate=outcome['gate'] if outcome else 'not_reached',
+                                  reason=outcome['reason'] if outcome else
+                                  'expected exact plan was not recorded; this does not exclude equivalent proof chains'))
+    stop = receipt.get('stop_reason', 'unknown')
+    return dict(schema=1, semantics='ink-planning-diagnostics-v1',
+                scope='Recorded gates only; no proof authority, no exhaustive applicability claim, no profitability claim on unseen inputs',
+                binding={k: receipt.get(k) for k in ('source', 'compiler_sha256', 'producer_sha256', 'source_snapshot', 'selected')},
+                search=dict(stop_reason=stop, exhausted=stop not in ('fixed-point', 'unknown'),
+                            attempts=receipt.get('attempts'), admitted_states=receipt.get('admitted_states'),
+                            rejected_proofs=len(receipt.get('rejected', [])),
+                            checked_edges=len(receipt.get('edges', [])),
+                            remaining=receipt.get('remaining'), elapsed_seconds=receipt.get('elapsed_seconds'),
+                            recipes=recipes),
+                delivery=dict(baseline_retained=selected == baseline if baseline is not None else None,
+                              reason=selection.get('reason') or guard.get('reason'),
+                              admitted_candidates=len(candidates), gates=dict(Counter(r['gate'] for r in outcomes)),
+                              cache=receipt.get('cache'), probe=receipt.get('automatic_probe')),
+                candidates=outcomes, expected_opportunities=opportunities,
+                rejected_proofs=receipt.get('rejected', []))
+
+
+def read(path):
+    with path.open('rb') as stream:
+        raw = stream.read(128_000_001)
+    if len(raw) > 128_000_000:
+        raise ValueError('planning diagnostics input byte budget')
+    return json.loads(raw)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('receipt', type=Path)
+    parser.add_argument('--expect', type=Path, help='diagnostic exact plan identities from an independent capability experiment')
+    parser.add_argument('-o', '--output', type=Path)
+    args = parser.parse_args()
+    result = diagnose(read(args.receipt), read(args.expect) if args.expect else ())
+    raw = json.dumps(result, indent=2, allow_nan=False) + '\n'
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(raw)
+    else:
+        print(raw, end='')
+
+
+if __name__ == '__main__':
+    main()
