@@ -10,10 +10,20 @@ def discover(store,source):
     while True:
         page=store.query(kind='implementation',semantics=SEMANTICS,after=after,limit=1024)
         for ident in page:
-            if store.object(ident)['payload']['package'].get('input_core_sha256')==source:result.append(ident)
+            obj=store.object(ident)
+            if obj['kind']=='implementation'and obj['semantics']==SEMANTICS and obj['payload'].get('package',{}).get('input_core_sha256')==source:result.append(ident)
         if len(page)<1024:break
         after=page[-1]
     return result
+
+def recipe_revision(compiler,producer_root,timeout,proposal_timeout):
+    digest=hashlib.sha256(compiler.read_bytes())
+    for path in sorted([*producer_root.glob('*.py'),*(producer_root/'data').rglob('*')]):
+        if path.is_file():digest.update(str(path.relative_to(producer_root)).encode());digest.update(path.read_bytes())
+    digest.update(str((timeout,proposal_timeout)).encode())
+    return digest.hexdigest()
+
+
 
 def propose(compiler,source_path,source,root,invoke,check_package,core,timeout=120,proposal_timeout=600,
             emit_target='rust',budget=16384,state_limit=4096,time_seconds=3600,registry_path=None,snapshot=None):

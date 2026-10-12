@@ -146,7 +146,7 @@ class Planner:
                         if result.returncode:self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='partial',reason=result.stderr[-2000:]))
                     except subprocess.TimeoutExpired:
                         self.notes.append(dict(source=state['source'],recipe=recipe['id'],status='partial',reason='proposal process time budget'))
-                if output.stat().st_size>64_000_000:raise ValueError('recipe output byte budget')
+                if output.stat().st_size>128_000_000:raise ValueError('recipe output byte budget')
                 if not cached.exists():shutil.copyfile(output,cached)
                 with output.open()as stream:
                     header=json.loads(next(stream));response=[]
