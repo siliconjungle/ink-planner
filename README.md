@@ -220,3 +220,8 @@ budget explicit; individual flags override the preset. See
 [search scheduling](docs/search-scheduling.md) for limits, cache behaviour and
 research references. Wider discovery still requires independent proof replay and
 comparable performance evidence before selection.
+
+## License
+
+Project code and documentation are [MIT licensed](LICENSE). Third-party dependencies,
+vendored projects and research data retain their own licenses and notices.
