@@ -10,12 +10,18 @@ from ink_knowledge.implementation_candidates import identity_selection,publish_c
 
 
 def discover(store,source):
-    result=[]
-    for ident in sorted(store.members()):
-        obj=store.object(ident)
-        if obj['kind']=='implementation' and obj['semantics']==SEMANTICS:
-            package=obj['payload'].get('package',{})
-            if package.get('input_core_sha256')==source:result.append(ident)
+    result=[];after=None
+    while True:
+        ids=store.query(kind='implementation',semantics=SEMANTICS,after=after,limit=1024)
+        for ident in ids:
+            # The disposable index narrows discovery only. Authenticate the
+            # wrapper, then let the selector check its complete proof package.
+            obj=store.object(ident)
+            if obj['kind']=='implementation' and obj['semantics']==SEMANTICS:
+                package=obj['payload'].get('package',{})
+                if package.get('input_core_sha256')==source:result.append(ident)
+        if len(ids)<1024:break
+        after=ids[-1]
     return result
 
 
@@ -62,7 +68,7 @@ def propose(compiler,source_path,source,root,invoke,check_package,core,timeout=3
                     notes.append(dict(proposal=label,status='declined',reason=str(error)[:1000]))
         except (ValueError,KeyError,OSError,subprocess.TimeoutExpired) as error:
             notes.append(dict(proposal='source projection',status='declined',reason=str(error)[:1000]))
-    store,ids=publish_candidates(root,packages)
+    store,ids=publish_candidates(root,packages,shared_knowledge=True)
     candidates=list(dict.fromkeys(ids[1:]));recipe.parent.mkdir(parents=True,exist_ok=True)
     # IDs are discovery hints. The main selector always rechecks their packages.
     if all(n['status']=='checked' for n in notes):
