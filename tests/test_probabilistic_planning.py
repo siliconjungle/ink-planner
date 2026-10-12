@@ -1,6 +1,8 @@
 import copy
 import unittest
-from ink_planner.search_policy import Policy,fit,search_restarts
+import subprocess
+import sys
+from ink_planner.stochastic_search import Policy,search_restarts
 from ink_planner.semantic_search import search
 from ink_planner.autotune import tune
 from ink_planner.synthesis import synthesize,evaluate,binary,variable,word,SORT
@@ -27,15 +29,29 @@ class ProbabilisticSearch(unittest.TestCase):
         a,r=run();b,q=run();self.assertEqual(a,b);self.assertEqual(a,[])
         self.assertEqual(r['attempts'],q['attempts']);self.assertEqual(r['selected_cost'],r['initial_cost'])
         self.assertEqual(search_restarts(search,s,c,lambda _:True,budget=0)[0],[])
-    def test_learned_model_and_failed_selfhost_cannot_admit_invalid_proof(self):
-        rows=[dict(features=[.1,1,0,1,1],accepted=True),dict(features=[1,2,1,2,2],accepted=False)]
-        model=fit(rows);s,c=self.fixture()
+    def test_failed_selfhost_cannot_admit_invalid_proof(self):
+        s,c=self.fixture()
         class Broken:
             def score(self,_):raise TimeoutError('device lost')
-        apps,r=search_restarts(search,s,c,lambda _:False,budget=8,strategy='learned',model=model,scorer=Broken())
+        apps,r=search_restarts(search,s,c,lambda _:False,budget=8,scorer=Broken())
         self.assertEqual(apps,[]);self.assertTrue(any(x.get('selfhost_failures') for x in r['search_policy']['runs']))
-        bad=copy.deepcopy(model);bad['weights'][0]=float('nan')
-        with self.assertRaises(ValueError):Policy(model=bad)
+    def test_removed_learned_search_flags_are_rejected(self):
+        base=['--compiler','unused','--core','unused','--snapshot','unused','-o','unused']
+        for module in ['semantic_search','parallel_search','adaptive_search']:
+            for flags in [['--search-model','unused']]+([['--search-strategy','learned']] if module=='semantic_search' else []):
+                with self.subTest(module=module,flags=flags):
+                    required=['--knowledge-root','unused','--target-context','unused'] if module=='adaptive_search' else []
+                    run=subprocess.run([sys.executable,'-m','ink_planner.'+module,*base,*required,*flags],capture_output=True,text=True)
+                    self.assertEqual(run.returncode,2)
+                    self.assertIn(flags[0],run.stderr)
+    def test_removed_trainer_module_is_unavailable(self):
+        run=subprocess.run([sys.executable,'-m','ink_planner.search_policy','--rows','unused','-o','unused'],capture_output=True,text=True)
+        self.assertNotEqual(run.returncode,0)
+        self.assertIn('No module named ink_planner.search_policy',run.stderr)
+    def test_removed_learned_policy_is_rejected(self):
+        s,c=self.fixture()
+        with self.assertRaises(ValueError):search_restarts(search,s,c,lambda _:True,strategy='learned')
+        with self.assertRaises(ValueError):Policy(strategy='learned')
     def test_synthesis_proposals_need_proof_even_when_all_samples_match(self):
         x=variable('x');source=x
         for _ in range(12):source=binary('+',source,x)
@@ -94,6 +110,8 @@ class OfflineTuning(unittest.TestCase):
         self.assertEqual(select(profile,self.context,small)['strategy'],'baseline')
         self.assertEqual(select(profile,self.context,{**features,'catalogue_entries':1001})['strategy'],'baseline')
         self.assertEqual(select(profile,{},features)['strategy'],'baseline')
+        obsolete=copy.deepcopy(profile);obsolete['cohorts'][0]['rows'][1]['strategy']='learned'
+        self.assertEqual(select(obsolete,self.context,features)['strategy'],'baseline')
         rows[1]['heldout'][0]['selected_cost']=11
         self.assertEqual(select(profile,self.context,features)['strategy'],'baseline')
         rows[1]['heldout'][0]['selected_cost']=10;rows[1]['heldout'][0]['ns']=95
