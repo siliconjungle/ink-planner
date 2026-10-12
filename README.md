@@ -201,3 +201,12 @@ no extrapolation to an unseen size or catalogue pin. Alternatives need more than
 in checked selected structural cost. Setup already enters child timings. Missing
 or stale profiles retain ordinary search. Wrapper overhead is measured separately;
 these receipts guide compilation and never change mathematical admission.
+
+Source contract refinement uses the ordinary knowledge recipe registry and
+`ink-evidence-v1` package checker. `contract-witnesses` proposes postcondition
+witnesses and the core rechecks every postcondition, invariant and caller.
+Both compiled planning and implementation selection accept `--contract-proofs`
+for source input; checked core input already carries its evidence. Candidate
+publication includes the dependency closure of embedded pure and state proofs,
+including inside composed plans. Missing comparable performance observations
+retains the baseline; a proof of correctness is not a speed estimate.
