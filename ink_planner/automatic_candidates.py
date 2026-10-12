@@ -19,13 +19,18 @@ def discover(store,source):
     return result
 
 
+def recipe_revision(compiler,producer_root,timeout,proposal_timeout):
+    digest=hashlib.sha256(compiler.read_bytes())
+    for path in sorted([*producer_root.glob('*.py'),*(producer_root/'data').rglob('*')]):
+        if path.is_file():digest.update(str(path.relative_to(producer_root)).encode());digest.update(path.read_bytes())
+    digest.update(str((timeout,proposal_timeout)).encode())
+    return digest.hexdigest()
+
+
 def propose(compiler,source_path,source,root,invoke,check_package,core,timeout=30,proposal_timeout=300):
     import producers.generic_indexed
     producer_root=Path(producers.generic_indexed.__file__).parent
-    digest=hashlib.sha256(compiler.read_bytes())
-    for path in sorted([*producer_root.glob('*.py'),*producer_root.glob('data/*')]):
-        if path.is_file():digest.update(path.name.encode());digest.update(path.read_bytes())
-    digest.update(str((timeout,proposal_timeout)).encode());revision=digest.hexdigest()
+    revision=recipe_revision(compiler,producer_root,timeout,proposal_timeout)
     recipe=Path(root)/'proposals'/source/(revision+'.json')
     if recipe.exists():
         try:
