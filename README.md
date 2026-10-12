@@ -142,3 +142,62 @@ proof checking, compilation, checkpoint and restore. The caller supplies bounded
 counts and exact workload cohorts. A batch sample is not a scalar-update sample
 multiplied by input length: duplicates, overlap and rollback can change its cost.
 These existing generic lifecycle phases need no compiler-specific pricing rule.
+
+## Optional probabilistic search and compiled kernels
+
+`ink-plan` retains ordinary deterministic search by default. Opt-in
+`--search-strategy stochastic|learned --search-seed N --search-restarts 4`
+shares one bounded candidate-check budget across restarts and retains an ordinary
+first lane. `--search-trace TRACE.json` records actual checker outcomes and effort;
+`ink-fit-search --rows TRACE.json -o MODEL.json` fits acceptance and checker-effort
+hints. Learned search requires `--search-model MODEL.json`. A model predicts utility,
+never mathematical truth. All proposals and cached recipes still replay through
+the independent source-bound checker; failed proposals retain the baseline.
+
+`ink-synthesize --compiler INK --core CORE --function NAME --output-store STORE
+-o SELECTION.json` proposes bounded pure u32 arithmetic expressions. Affine probes,
+random candidates, exact sample vectors and counterexamples reject bad proposals;
+ordinary universal word-ring proofs admit replacements. This is not general
+program synthesis, float equivalence or a transactional state proof.
+
+`ink-plan-parallel` runs independent planner/checker processes with a shared total
+proof budget and separately rechecks the selected package before publication.
+Worker startup and proof costs count in complete planning timings. More workers
+are not automatically faster.
+
+`ink-autotune` provides bounded offline Gaussian-process configuration exploration
+over supplied complete-call observations. Correctness, device fallback, explicit
+setup cost, expected call count and independent heldout evidence gate alternatives.
+The CLI without heldout evidence retains the baseline. The Python API accepts a
+heldout callback. Receipts do not install runtime profiles or grant eligibility;
+existing proof and target-context admission still apply.
+
+`--discovery-accelerator` enables knowledge's authenticated in-memory exact index.
+`--ann-hints` optionally uses HNSW structural neighbourhoods to order proposals.
+Install the optional `ann` extra for hnswlib 0.8.0; neither NumPy nor HNSW is a
+default dependency. The 64-dimensional deterministic structural sketch is not a
+learned semantic embedding. Full typed discovery and exact matching remain;
+missing libraries or index failures retain ordinary ordering. Approximate recall
+can affect search quality at a fixed budget, so multi-restart search keeps an
+ordinary lane. These disposable indexes confer no proof authority.
+
+Packaged `kernels/planner.ink` and `hosts/planner-kernels.mjs` execute bounded word
+feature scoring and candidate evaluation through ordinary compiled Ink backends.
+`--selfhost-endpoint http://127.0.0.1:PORT` connects stochastic/learned search to an
+optional loopback host; scores are independently compared and failures use local
+ranking. Synthesis supports the same host for one-register word evaluation. Python
+still coordinates graph search and the independent checker remains separate.
+No runtime profitability trials are added. See the distribution's
+`docs/probabilistic-planning.md` and `bench/probabilistic-planner` for commands,
+actual hardware GPU receipts, retained losses and setup costs.
+
+`ink-plan-adaptive --compiler INK --core CORE --snapshot SNAPSHOT --knowledge-root
+STORE --target-context TARGET.json --profile PROFILE.json -o SELECTION.json`
+chooses a search approach from saved offline evidence. Observed cohorts bind
+catalogue size, source node count, budgets, exact source/snapshot, planner and
+producer code/data, compiler, Python and caller-supplied target context. There is
+no extrapolation to an unseen size or catalogue pin. Alternatives need more than
+10% gain in complete-call training and each independent holdout, with no loss
+in checked selected structural cost. Setup already enters child timings. Missing
+or stale profiles retain ordinary search. Wrapper overhead is measured separately;
+these receipts guide compilation and never change mathematical admission.

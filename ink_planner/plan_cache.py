@@ -5,7 +5,7 @@ from pathlib import Path
 MAX_BYTES=16_000_000
 
 
-def fingerprint(compiler, core, snapshot, cost_model, budget, rounds, context=None):
+def fingerprint(compiler, core, snapshot, cost_model, budget, rounds, context=None, search_options=None):
     from importlib.resources import files
     import ink_knowledge, producers
     def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -13,10 +13,10 @@ def fingerprint(compiler, core, snapshot, cost_model, budget, rounds, context=No
     for label,root in [('planner',Path(__file__).parent),('knowledge',Path(ink_knowledge.__file__).parent),('producers',Path(producers.__file__).parent)]:
         for path in sorted(root.rglob('*.py')):code[label+'/'+str(path.relative_to(root))]=digest(path)
         for path in sorted((root/'data').rglob('*.json')):code[label+'/'+str(path.relative_to(root))]=digest(path)
-    for name in ['structural-costs.json','producer-catalog.json']:
+    for name in ['structural-costs.json','producer-catalog.json','implementation-recipes.json','property-probes.json']:
         code['knowledge/'+name]=hashlib.sha256(files('ink_knowledge').joinpath(name).read_bytes()).hexdigest()
     key=dict(schema=1,compiler=digest(compiler),core=digest(core),snapshot=digest(snapshot),
-             cost_model=None if cost_model is None else digest(cost_model),budget=budget,rounds=rounds,
+             cost_model=None if cost_model is None else digest(cost_model),budget=budget,rounds=rounds,search_options=search_options,
              context=None if context is None else digest(context),code=code,python=list(sys.version_info[:3]))
     return hashlib.sha256(json.dumps(key,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
