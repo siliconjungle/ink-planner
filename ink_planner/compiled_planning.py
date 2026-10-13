@@ -29,6 +29,10 @@ def effort_options(args):
 def code_fingerprint():
     import ink_knowledge,producers
     roots=[('knowledge',Path(ink_knowledge.__file__).parent),('producers',Path(producers.__file__).parent),('planner',Path(__file__).parent)]
+    # Installed authoring resources can change proposals without changing a
+    # Python module or database snapshot. Bind those bytes to cache/cost reuse.
+    authoring=Path(ink_knowledge.__file__).parent.parent
+    roots.extend((name,authoring/name)for name in ['libraries','research/general-laws','research/verified-kernel'])
     return identity({label+'/'+str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest()
         for label,root in roots for p in sorted(root.rglob('*'))if p.suffix in {'.py','.json','.gz','.mjs','.rs','.txt','.ink'}and p.is_file()})
 
