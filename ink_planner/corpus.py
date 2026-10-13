@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -25,6 +26,52 @@ from pathlib import Path
 
 SEMANTICS = 'ink-planning-corpus-report-v1'
 MANIFEST = 'ink-planning-corpus-v1'
+
+
+def clone_knowledge(source, destination):
+    """Private publication with shared immutable files and a private index.
+
+    Producers may read research fixtures, libraries and custom root metadata.
+    Keep those inputs; omit only development caches and checkout metadata.
+    SQLite is mutable, so a hard link would let candidate publication modify
+    the installed index. Its backup API also avoids copying a partial WAL state.
+    """
+    source, destination = Path(source), Path(destination)
+    omitted = {'.git', 'build', 'compiled-cache', '__pycache__', 'store',
+               'index.sqlite', 'index.sqlite-wal', 'index.sqlite-shm'}
+    def ignore(path, names):
+        return set(names) & (omitted if Path(path) == source else {'__pycache__'})
+    shutil.copytree(source, destination, copy_function=os.link, ignore=ignore, symlinks=True)
+    if (source / 'store/snapshot.json').exists():
+        from ink_knowledge import Store, identity
+        publication = Store(source)
+        members = publication.members()  # Authenticate the pinned canonical tree.
+        trees = {publication.snapshot['root']}
+        for witness in members.values():
+            node = identity(dict(schema=1, entries=witness['entries']))
+            trees.add(node)
+            for edge in witness['path']:
+                sibling = edge['sibling']
+                trees.add(sibling)
+                node = identity(dict(schema=1, left=sibling if edge['left'] else node,
+                                     right=node if edge['left'] else sibling))
+                trees.add(node)
+        data = destination / 'store'
+        shutil.copytree(publication.data, data, copy_function=os.link, symlinks=True,
+                        ignore=lambda _, names: set(names) & {'objects', 'trees', 'snapshots'})
+        for directory, ids in [('objects', members), ('trees', trees), ('snapshots', [publication.snapshot_id])]:
+            (data / directory).mkdir()
+            for ident in ids:
+                os.link(publication.data / directory / (ident + '.json'), data / directory / (ident + '.json'))
+        if Store(source).snapshot_id != publication.snapshot_id:
+            raise ValueError('knowledge publication changed during corpus isolation')
+    elif (source / 'store').exists():
+        shutil.copytree(source / 'store', destination / 'store', copy_function=os.link, symlinks=True)
+    index = source / 'index.sqlite'
+    if index.exists():
+        with sqlite3.connect(index.as_uri() + '?mode=ro', uri=True) as original:
+            with sqlite3.connect(destination / 'index.sqlite') as private:
+                original.backup(private)
 
 
 def load_manifest(path):
@@ -87,7 +134,7 @@ def run_program(program, manifest_dir, args, out):
         scratch = Path(temporary) / 'knowledge'
         # Hard links: published objects are new immutable files and pointers
         # are replaced atomically, so the shared checkout is never rewritten.
-        subprocess.run(['cp', '-al', str(args.knowledge_root), str(scratch)], check=True)
+        clone_knowledge(args.knowledge_root, scratch)
         plan = out / 'plans' / f"{program['name']}.json"
         plan.parent.mkdir(parents=True, exist_ok=True)
         command = [sys.executable, '-m', 'ink_planner.compiled_planning', '--compiler', str(args.compiler),
