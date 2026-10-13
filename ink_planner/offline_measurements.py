@@ -18,6 +18,10 @@ def read_workload(path):
     raw=path.read_bytes()
     if len(raw)>16_000_000:raise ValueError('measurement workload byte budget')
     v=json.loads(raw)
+    if not isinstance(v,dict):raise ValueError('measurement workload object')
+    if v.get('schema')==2:
+        from .state_measurements import read_workload as read_state
+        return read_state(path)
     if set(v)!={'schema','phases','profile','workload'} or v['schema']!=1:raise ValueError('measurement workload schema')
     if not isinstance(v['phases'],dict) or not 1<=len(v['phases'])<=64 or set(v['phases'])!=set(v['profile']):raise ValueError('measurement phases/profile mismatch')
     calls=0
@@ -36,18 +40,26 @@ def read_workload(path):
 
 def independent_workloads(training,holdout):
     first,_=read_workload(training);second,_=read_workload(holdout)
+    if first['schema']!=second['schema']:raise ValueError('holdout workload kind mismatch')
     if first['profile']!=second['profile']:raise ValueError('holdout must retain the lifecycle objective weights')
+    if first['schema']==2:
+        from .state_measurements import fingerprints
+        if fingerprints(first)&fingerprints(second):raise ValueError('holdout state histories overlap selection histories')
+        return
     def calls(spec):
         return {json.dumps([row['function'],row['args']],sort_keys=True,separators=(',',':'),allow_nan=False)
                 for rows in spec['phases'].values()for row in rows}
     if calls(first)&calls(second):raise ValueError('holdout inputs overlap selection inputs')
 
-def target_context(planner):
+def target_context(planner,state=False):
     if planner.options.target=='javascript':
         executable=shutil.which('node')
         if not executable:raise ValueError('offline measurement requires Node.js')
         version=subprocess.check_output([executable,'--version'],text=True).strip();runner=RUNNER
         bridge='trusted-values-v3;mean-complete-call;full-bit-aware-output-consumption'
+        if state:
+            from .state_measurements import RUNNER as runner
+            bridge='typed-bound-full-observation-v1;independent-state-history;portable-lifecycle;whole-host-peak-rss'
     elif planner.options.target=='rust':
         from .native_measurements import RUNNER as runner
         executable=shutil.which('rustc')
@@ -75,6 +87,9 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         if seconds<=0:raise ValueError('offline measurement acquisition time budget')
         return min(seconds,planner.options.check_timeout)
     spec,digest=read_workload(path)
+    if spec['schema']==2:
+        from .state_measurements import acquire as acquire_state
+        return acquire_state(planner,store,packages,states,measurements,path,controls)
     target=target_context(planner);controls=controls or {}
     workload=dict(spec['workload'])
     if set(workload)!={'shape','distribution','concurrency','residency'}:raise ValueError('measurement workload provenance fields')

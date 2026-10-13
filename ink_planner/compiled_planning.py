@@ -43,7 +43,7 @@ def fingerprint(state):
         for fact in package['facts']:
             facts.add(identity({k:v for k,v in fact.items()if k!='proof'}))
     return identity(dict(source=state['source'],representation=(state.get('representation')or{}).get('representation'),
-        definitions=state.get('definition_choices')or{},physical=state.get('physical'),route=state.get('route'),resources=state.get('resources'),properties=sorted(facts)))
+        definitions=state.get('definition_choices')or{},physical=state.get('physical'),maintained=state.get('maintained'),route=state.get('route'),resources=state.get('resources'),properties=sorted(facts)))
 
 def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_seconds=3600,memory_bytes=512_000_000):
     """The callback boundary admits complete proof chains, never hash equality.

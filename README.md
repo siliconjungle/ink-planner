@@ -274,3 +274,41 @@ are published in the distribution's `reports/automatic-planning-2026-10-13`.
 
 Project code and documentation are [MIT licensed](LICENSE). Third-party dependencies,
 vendored projects and research data retain their own licenses and notices.
+
+## State lifecycle acquisition
+
+JavaScript source-state candidates can use explicit schema-2 workloads with
+`--measure-workload` and an independent `--measure-holdout`. The installed
+`producers.maintained_folds` recipe proposes proof-checked maintained maps and
+bounded dense prefixes. Every proposal is replayed before measurement.
+
+```json
+{
+  "schema": 2,
+  "setup": [{"call":"put","args":[0,7,true,false]}],
+  "phases": {
+    "load":{"kind":"module_load"},
+    "initialise":{"kind":"initialise"},
+    "update":{"kind":"history","calls":[
+      {"call":"put","args":[0,9,true,false]},
+      {"call":"total_query","args":[]}
+    ]},
+    "checkpoint":{"kind":"checkpoint"},
+    "restore":{"kind":"restore"}
+  },
+  "profile":{"load":1,"initialise":1,"update":10000,"checkpoint":1,"restore":1},
+  "workload":{"shape":{"rows":1},"distribution":"explicit","concurrency":1,"residency":"restored"}
+}
+```
+
+Each history resets to the same portable seed outside its timed window. The
+independent source evaluator supplies all results, errors, versions, events and
+exact snapshots. These must match before and after timing, and captured inputs
+must remain owned. Each candidate is measured in separate fresh processes; peak
+RSS includes the host and adapter. Setup, module load, checkpoint and restore costs
+have explicit weights. Missing comparable evidence retains the baseline.
+
+Holdout histories must differ from training transition histories, although setup
+and parameterless reads can recur. Holdout accepts or rejects the frozen winner.
+There are no application-time profitability probes. Current limits are 4,096 setup
+calls, 512 history calls, 64 phases, 1–8 processes and a 16 MB input workload.
