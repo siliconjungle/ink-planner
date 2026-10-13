@@ -2,6 +2,18 @@ import unittest
 from ink_planner.compiled_planning import explore
 
 class RecursivePlans(unittest.TestCase):
+    def test_semantic_search_instantiates_after_an_admitted_intermediate(self):
+        from ink_planner.semantic_search import search
+        from planner.tests.test_term_matching import var,term
+        x=var('x')
+        first=dict(params={'x':x['sort']},conditions=[],**{'from':term('method:a',x),'to':term('method:b',x)})
+        second=dict(params={'x':x['sort']},conditions=[],**{'from':term('method:b',x),'to':x})
+        catalogue=dict(roots=['first'],objects={'first':first})
+        def refresh(bodies):
+            return {'second':second}if bodies['f']==term('method:b',var('input'))else{}
+        applications,receipt=search(dict(functions={'f':term('method:a',var('input'))}),catalogue,lambda _:True,budget=8,refresh=refresh)
+        self.assertEqual([a['law']for a in applications],['first','second'])
+        self.assertLess(receipt['selected_cost'],receipt['initial_cost'])
     def test_revisits_layers_beyond_old_round_bound_and_stops_cycles(self):
         initial=dict(steps=[])
         def check(p):

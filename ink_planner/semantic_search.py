@@ -7,6 +7,7 @@ import argparse
 import copy
 import hashlib
 import heapq
+import itertools
 import json
 import time
 import subprocess
@@ -202,8 +203,39 @@ def condition_proof(goal, catalogue, depth=0, active=None, work=None):
             if any(p != 'Normalize' for p in proofs): return {'Congruence': proofs}
     return 'Normalize'
 
+def condition_candidates(goal,catalogue,limit=4,depth=0,active=None,work=None):
+    """Bounded alternative certificates, never evidence that a premise is true.
 
-def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operation_costs=None, core_program=None, diverse=True, strategy="memo", memory_bytes=256_000_000, time_seconds=600, alternatives=None, policy=None, neighbourhood=None):
+    A first matching support lemma may have unprovable conditions. Do not let
+    that untrusted proposal hide a later usable lemma or congruence proof.
+    """
+    active=set()if active is None else active;work=[4096]if work is None else work
+    fingerprint=key(goal)
+    if depth>=128 or fingerprint in active or work[0]<=0:return ['Normalize']
+    active=active|{fingerprint};work[0]-=1;result=[];seen=set()
+    def add(proof):
+        k=key(proof)
+        if k not in seen:result.append(proof);seen.add(k)
+    add('Normalize')
+    for fact in catalogue.get('certificates',[]):
+        if fact['goal']==goal:add(fact['proof'])
+        if len(result)>=limit:return result
+    for ident,law in catalogue['objects'].items():
+        if work[0]<=0 or len(result)>=limit:break
+        work[0]-=1;args={}
+        if not match(law['from'],goal['from'],law['params'],args)or set(args)!=set(law['params'])or substitute(law['to'],args)!=goal['to']:continue
+        choices=[condition_candidates(dict(**{'from':substitute(c['from'],args),'to':substitute(c['to'],args)}),catalogue,limit,depth+1,active,work)for c in law['conditions']]
+        for premises in itertools.islice(itertools.product(*choices),limit-len(result)):
+            add({'Use':dict(law=ident,arguments=dict(sorted(args.items())),premises=list(premises))})
+    left,right=goal['from'],goal['to'];ln,rn=left['node'],right['node']
+    if len(result)<limit and left['sort']==right['sort']and isinstance(ln,dict)and isinstance(rn,dict)and 'Op'in ln and 'Op'in rn and ln['Op'][0]==rn['Op'][0]and len(children(left))==len(children(right)):
+        choices=[condition_candidates(dict(**{'from':a,'to':b}),catalogue,limit,depth+1,active,work)for a,b in zip(children(left),children(right))]
+        for proofs in itertools.islice(itertools.product(*choices),limit-len(result)):
+            if any(p!='Normalize'for p in proofs):add({'Congruence':list(proofs)})
+    return result
+
+
+def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operation_costs=None, core_program=None, diverse=True, strategy="memo", memory_bytes=256_000_000, time_seconds=600, alternatives=None, policy=None, neighbourhood=None, refresh=None):
     if strategy not in {"memo","beam"}:raise ValueError("unknown search strategy")
     if budget<0 or width<1 or memory_bytes<1 or time_seconds<0 or (rounds is not None and rounds<0):raise ValueError("search budgets")
     started=time.monotonic();deferred=[];memo_edges=[];iteration=0;memory_exhausted=False;timed_out=False;prefix_states={}
@@ -255,6 +287,13 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         round_index=iteration-1
         hinted=set()
         for _, bodies, applications in frontier:
+            if refresh is not None:
+                # A proved rewrite can expose a template that did not match the
+                # original syntax. Instances are proposals; check() below still
+                # replays the complete chain against the original module.
+                extra=refresh(bodies)
+                objects.update(extra);matcher.add(extra)
+                catalogue['roots']=sorted(set(catalogue['roots'])|set(extra))
             for name, body in bodies.items():
                 for path, target in positions(body):
                     if time.monotonic()-started>=time_seconds:timed_out=True;break
@@ -310,14 +349,17 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
             if not admit(proposal):
                 rejected += 1
                 step = proposal[-1]
-                premise_alternatives = [condition_proof({'from': substitute(c['from'], args),
-                                                 'to': substitute(c['to'], args)}, catalogue)
-                                for c in law['conditions']]
-                if premise_alternatives == step['premises']: continue
-                if checked >= budget: exhausted = True; break
-                proposal = proposal[:-1] + [dict(step, premises=premise_alternatives)]
-                checked += 1
-                if not admit(proposal): rejected += 1; continue
+                choices=[condition_candidates(dict(**{'from':substitute(c['from'],args),'to':substitute(c['to'],args)}),catalogue)for c in law['conditions']]
+                accepted=False
+                for premises in itertools.islice(itertools.product(*choices),16):
+                    premises=list(premises)
+                    if premises==step['premises']:continue
+                    if checked>=budget:exhausted=True;break
+                    if time.monotonic()-started>=time_seconds:timed_out=True;break
+                    trial=proposal[:-1]+[dict(step,premises=premises)];checked+=1
+                    if admit(trial):proposal=trial;accepted=True;break
+                    rejected+=1
+                if not accepted:continue
             seen.add(fingerprint)
             memo_bytes+=len(fingerprint.encode())+len(key(proposal).encode())
             if alternatives is not None:alternatives.append(proposal)
@@ -648,6 +690,7 @@ def main():
         discovery = discovery_objects(store, roots, fetched)
         del fetched
         original_snapshot_id = store.snapshot_id
+        catalogue_source=store
         if generated:
             # An immutable derived catalogue transports proposals and exact
             # dependencies. Membership remains distinct from mathematical admission.
@@ -677,6 +720,27 @@ def main():
         # and premise dependency closure, against this same input module.
         checker = SelectionChecker(compiler, args.core.resolve(), store, tmp)
         check = checker.check
+        from ink_knowledge.proposal_views import ProposalViews
+        refreshed=set();refresh_receipts=[]
+        def refresh(bodies):
+            nonlocal store
+            body_key=key(bodies);body_id=hashlib.sha256(body_key.encode()).hexdigest()
+            if body_id in refreshed:return {}
+            refreshed.add(body_id)
+            if len(refreshed)>4096:raise ValueError('semantic instantiation state budget')
+            next_subject=dict(subject,functions=bodies)
+            extra,notes=generate(next_subject,json.loads(args.core.read_text()),catalogue_source)
+            extra={i:o for i,o in extra.items()if i not in discovery}
+            if not extra:return {}
+            if len(discovery)+len(extra)>16384 or sum(len(key(o))for o in extra.values())>args.memory_bytes:
+                raise ValueError('incremental semantic discovery budget')
+            # Use a new authenticated transport before updating discovery, so
+            # ProposalViews can invalidate closures containing old membership.
+            if not isinstance(store,ProposalViews):
+                store=ProposalViews(catalogue_source,dict(discovery),tmp/'incremental-knowledge')
+            store.update(extra);discovery.update(extra);checker.store=store
+            refresh_receipts.append(dict(state_sha256=body_id,new_objects=len(extra),producers=notes))
+            return {i:law(o)for i,o in extra.items()if o['kind']=='rewrite'}
         alternative_output=None
         if args.stream_alternatives:
             args.alternatives.parent.mkdir(parents=True,exist_ok=True)
@@ -693,7 +757,9 @@ def main():
             applications, receipt = search_restarts(search, subject, catalogue, check, budget=args.budget,
                 strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, model=search_model,scorer=scorer,
                 operation_costs=operation_costs, rounds=args.rounds, core_program=core_program,neighbourhood=neighbourhood,engine_strategy=args.strategy,
-                width=args.width,memory_bytes=args.memory_bytes,time_seconds=args.time_seconds,alternatives=alternatives)
+                width=args.width,memory_bytes=args.memory_bytes,time_seconds=args.time_seconds,alternatives=alternatives,refresh=refresh)
+            receipt['incremental_discovery']=dict(visited_states=len(refreshed),batches=refresh_receipts,
+                scope='Reinstantiate ordinary database authoring data on admitted intermediate syntax; each complete application chain replayed')
             if neighbourhood is not None:receipt['neighbourhood']=neighbourhood.receipt
             receipt['round_limit'] = args.rounds
             receipt['checker_sessions'] = dict(attempts=checker.session_attempts, admission_batches=checker.admission_batches, newly_admitted=checker.newly_admitted, rejected_closures=checker.rejected_closures, checked_roots=sorted(checker.checked_roots))
