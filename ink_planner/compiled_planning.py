@@ -180,6 +180,9 @@ class Planner:
                         headers.add(key);continue
                     status=row['status'];counts.setdefault(key,{})[status]=counts.get(key,{}).get(status,0)+1
                     if status=='declined':self.notes.append(dict(source=state['source'],recipe=name,**row));continue
+                    if status=='diagnostic':
+                        # Untrusted search observations for planning diagnostics only.
+                        self.notes.append(dict(source=state['source'],recipe=name,status='diagnostic',label=row.get('label'),diagnostics=row.get('diagnostics')));continue
                     if status=='migration':
                         before=self.directory/'migration-from.json';after=self.directory/'migration-to.json';bridge=self.directory/'migration.json';source=self.directory/'migration-core.json'
                         before.write_bytes(canonical(row['source'])+b'\n');after.write_bytes(canonical(row['target'])+b'\n');bridge.write_bytes(canonical(row['bridge'])+b'\n');source.write_bytes(canonical(state['core'])+b'\n')
@@ -238,6 +241,9 @@ def main():
     p.add_argument('--measure-processes',type=int,default=3,help='fresh offline timing processes, sharing the measurement time budget')
     p.add_argument('--measurement-mode',choices=['auto','off'],default='auto',help='automatically acquire bounded pure typed probes when no workload evidence exists')
     p.add_argument('--cache',choices=['auto','off'],default='auto',help='reuse same-epoch bounded plans with fresh proof replay')
+    p.add_argument('--work-workload',type=Path,help='reference-interpreter work of each candidate on these calls (deterministic, no timing)')
+    p.add_argument('--work-model',type=Path,help='held-out-validated work model; selects by reference work when no comparable timings exist')
+    p.add_argument('--keep-candidates',type=Path,help='write every admitted candidate package to this directory')
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
     args=effort_options(p.parse_args())
     if not 1<=args.recipe_workers<=8:p.error('recipe workers must be between 1 and 8')
@@ -253,6 +259,11 @@ def main():
     if args.measure_holdout:
         from .offline_measurements import independent_workloads
         independent_workloads(args.measure_workload,args.measure_holdout)
+    if args.work_model and not args.work_workload:p.error('--work-model needs --work-workload')
+    work_model=None
+    if args.work_model:
+        from .work_model import load as load_work_model
+        work_model=load_work_model(args.work_model)
     root=args.knowledge_root.resolve();compiler=args.compiler.resolve();store=Store(root,args.snapshot)
     store.ensure_index()
     registry,digest=load(args.registry,store)
@@ -360,6 +371,20 @@ def main():
                     selection['holdout']=dict(proposed=proposed,accepted=chosen==proposed,selection=held_selection,acquisition=held_acquisition,
                         scope='Independent rejection gate; holdout does not rank new alternatives')
             selected=packages[measurements.index(chosen)]
+        work=None
+        if args.work_workload:
+            from .work_model import acquire as acquire_work
+            work=acquire_work(planner,packages,[s for _,s in states.values()],measurements,args.work_workload)
+        # Timings, when present, always decide. The work model only replaces
+        # the evidence-free default, and only with a validated calibration.
+        if work_model is not None and selected is baseline and selection.get('reason','').startswith('missing comparable'):
+            from .work_model import select as select_by_work
+            eligible=[m for m,(_,s)in zip(measurements,states.values())if s.get('capability',{}).get('emittable',True)]
+            chosen,selection=select_by_work(work_model[0],work_model[1],work,measurements,eligible,measurements[0])
+            selected=packages[measurements.index(chosen)]
+        if args.keep_candidates:
+            args.keep_candidates.mkdir(parents=True,exist_ok=True)
+            for m,package in zip(measurements,packages):(args.keep_candidates/(m+'.plan.json')).write_bytes(canonical(package)+b'\n')
         # A selected packet must also pass fresh whole-chain replay before emission.
         checked=planner.check(selected)
         replay=directory/'frozen-replay.json';replay.write_bytes(canonical(selected)+b'\n')
@@ -369,7 +394,7 @@ def main():
         args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(selected)+b'\n')
         receipt.update(dict(schema=1,semantics=SEMANTICS,status='checked',source=source,compiler_sha256=planner.compiler_hash,
             registry_sha256=digest,producer_sha256=planner.code_hash,planning_budgets=dict(effort=args.planning_effort,recipe_workers=args.recipe_workers,**{name:getattr(args,name)for name in EFFORTS['balanced']}),reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
-            selection=selection,automatic_probe=automatic_probe,measurement_acquisition=acquisition,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
+            selection=selection,automatic_probe=automatic_probe,measurement_acquisition=acquisition,work_acquisition=work,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
         from .planning_diagnostics import diagnose
         receipt['diagnostics']=diagnose(receipt)
         Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')

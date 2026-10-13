@@ -235,11 +235,55 @@ def condition_candidates(goal,catalogue,limit=4,depth=0,active=None,work=None):
     return result
 
 
-def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operation_costs=None, core_program=None, diverse=True, strategy="memo", memory_bytes=256_000_000, time_seconds=600, alternatives=None, policy=None, neighbourhood=None, refresh=None):
+def guarded_variants(discovery, subject, limit=64):
+    """Guarded variants of eligible conditional laws whose left side matches the subject."""
+    from ink_knowledge.guarded_laws import eligible, guard
+    from ink_knowledge.store import identity as entry_identity
+    sites=[t for body in subject['functions'].values() for _,t in positions(body)]
+    out={}
+    for ident,entry in sorted(discovery.items()):
+        if len(out)>=limit:break
+        if not eligible(entry):continue
+        law=entry['payload']
+        if not any(match(law['from'],t,law['params'],{}) for t in sites):continue
+        derived=guard(ident,entry)
+        out[entry_identity(derived)]=derived
+    return {i:e for i,e in out.items() if i not in discovery}
+
+
+def guarded_again(body, path, condition):
+    """Whether the site at `path` is, or lies under, a `choose` testing
+    `condition` in the same binder scope, so a guard would only repeat it.
+    Tests above the innermost enclosing lambda use different binders."""
+    node=body;found=False
+    for index in path:
+        n=node['node']
+        if isinstance(n,dict) and 'Lambda' in n:found=False
+        elif isinstance(n,dict) and n.get('Op',[None])[0]=='call:choose' and n['Op'][1][0]==condition and index>0:found=True
+        node=children(node)[index]
+    n=node['node']
+    return found or (isinstance(n,dict) and n.get('Op',[None])[0]=='call:choose' and n['Op'][1][0]==condition)
+
+
+def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operation_costs=None, core_program=None, diverse=True, strategy="memo", memory_bytes=256_000_000, time_seconds=600, alternatives=None, policy=None, neighbourhood=None, refresh=None, near_misses=None, reason=None):
+    """`near_misses` optionally records matched-but-unadmitted proposals and
+    `reason` returns the checker's last rejection message. Both are diagnostics
+    only: they never change ordering, admission or the selected result."""
+    def last_reason():
+        if reason is None:return None
+        try:return reason()
+        except Exception as error:return 'reason unavailable: '+str(error)[:200]
     if strategy not in {"memo","beam"}:raise ValueError("unknown search strategy")
     if budget<0 or width<1 or memory_bytes<1 or time_seconds<0 or (rounds is not None and rounds<0):raise ValueError("search budgets")
     started=time.monotonic();deferred=[];memo_edges=[];iteration=0;memory_exhausted=False;timed_out=False;prefix_states={}
     objects = catalogue['objects']
+    from ink_knowledge.guarded_laws import guard_condition
+    def guarded(o):
+        node=o['to']['node']
+        return (not o.get('conditions') and len(o.get('dependencies',[]))==1 and isinstance(node,dict)
+                and node.get('Op',[None])[0]=='call:choose' and o['from'] in node['Op'][1][1:])
+    # A guard re-matching its own untouched branch would only repeat the test.
+    guards={i:guard_condition(o) for i,o in objects.items() if guarded(o)}
     from ink_planner.term_matching import Matcher
     matcher=Matcher(objects,catalogue['roots'],key,children,match,substitute,memory_bytes)
     component_model = operation_costs if isinstance(operation_costs, TargetCostModel) else None
@@ -300,6 +344,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                     for ident,args,new in matcher.matches(target):
                         if time.monotonic()-started>=time_seconds:timed_out=True;break
                         law=objects[ident]
+                        if ident in guards and guarded_again(body,path,substitute(guards[ident],args)):continue
                         updated = dict(bodies); updated[name] = replace(body, path, new)
                         fingerprint = key(updated)
                         if fingerprint in seen: continue
@@ -314,6 +359,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                         pending_bytes+=size;pending_seen.add(proposal_key)
                         score = score_bodies(updated)
                         pending.append((score, updated, proposal, fingerprint, law, args))
+                        if near_misses is not None:near_misses.matched(ident, law)
         # Rank untrusted proposals before spending bounded checker work. Only
         # the best `width` admitted bodies can enter the next beam; checking
         # lower-ranked alternatives after filling it cannot improve that beam.
@@ -339,7 +385,9 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         candidates = []
         processed=0
         for processed, (score, updated, proposal, fingerprint, law, args) in enumerate(pending,1):
-            if fingerprint in seen: continue
+            if fingerprint in seen:
+                if near_misses is not None:near_misses.duplicate(proposal[-1]['law'], law)
+                continue
             if time.monotonic()-started>=time_seconds:timed_out=True;processed-=1;break
             if checked >= budget: exhausted = True; processed-=1; break
             checked += 1
@@ -349,6 +397,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
             if not admit(proposal):
                 rejected += 1
                 step = proposal[-1]
+                first_reason = last_reason()
                 choices=[condition_candidates(dict(**{'from':substitute(c['from'],args),'to':substitute(c['to'],args)}),catalogue)for c in law['conditions']]
                 accepted=False
                 for premises in itertools.islice(itertools.product(*choices),16):
@@ -359,7 +408,10 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                     trial=proposal[:-1]+[dict(step,premises=premises)];checked+=1
                     if admit(trial):proposal=trial;accepted=True;break
                     rejected+=1
-                if not accepted:continue
+                if not accepted:
+                    if near_misses is not None:near_misses.checked(step['law'], law, False, last_reason() or first_reason, args)
+                    continue
+            if near_misses is not None:near_misses.checked(proposal[-1]['law'], law, True)
             seen.add(fingerprint)
             memo_bytes+=len(fingerprint.encode())+len(key(proposal).encode())
             if alternatives is not None:alternatives.append(proposal)
@@ -377,6 +429,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                 size=len(item[3].encode())+len(key(item[2]).encode())
                 if memo_bytes+retained+size+matcher.bytes>memory_bytes:memory_exhausted=True;break
                 deferred.append(item);retained+=size
+        if near_misses is not None and hasattr(near_misses,'flush'):near_misses.flush(complete=False,rounds=iteration)
         if exhausted or memory_exhausted or timed_out:break
         if not candidates and not deferred:break
         frontier = candidates
@@ -449,6 +502,8 @@ class SelectionChecker:
         self.admission_batches = 0
         self.newly_admitted = 0
         self.rejected_closures = 0
+        # Diagnostic text of the last rejection; never proof or selection authority.
+        self.last_error = None
 
     @staticmethod
     def close_session(session):
@@ -459,6 +514,7 @@ class SelectionChecker:
         session.stdout.close(); session.stderr.close()
 
     def check(self, applications):
+        self.last_error = None
         # Admission and proof requests share the CLI's fixed session lease.
         # Reserve two requests for an extension followed by its proof check.
         for key_, process in list(self.sessions.items()):
@@ -481,8 +537,9 @@ class SelectionChecker:
                 self.sessions[available] = session
             else:
                 try: bundle = self.store.bundle(roots)
-                except ValueError:
+                except ValueError as error:
                     self.rejected_closures += 1
+                    self.last_error = 'closure: ' + str(error)[:400]
                     return False
                 candidates = [k for k,s in self.sessions.items() if s in self.incremental_sessions]
                 extended = False
@@ -502,6 +559,7 @@ class SelectionChecker:
                         extended = True
                     elif result.get('error') != 'knowledge view schema/size limit':
                         self.rejected_closures += 1
+                        self.last_error = 'closure: admission rejected: ' + str(result.get('error'))[:400]
                         return False
                     # A full union does not make a separately bounded closure invalid.
                 if not extended:
@@ -521,6 +579,7 @@ class SelectionChecker:
                     if not capability.get('ready'):
                         self.close_session(session)
                         self.rejected_closures += 1
+                        self.last_error = 'closure: checker session not ready'
                         return False
                     self.sessions[roots] = session
                     self.session_requests[session] = 0
@@ -530,8 +589,10 @@ class SelectionChecker:
         self.session_requests[session] += 1
         session.stdin.write(json.dumps(applications) + '\n'); session.stdin.flush()
         response = session.stdout.readline()
-        checked = bool(response and json.loads(response).get('checked'))
+        result = json.loads(response) if response else {}
+        checked = bool(result.get('checked'))
         if checked: self.checked_roots.update(roots)
+        else: self.last_error = str(result.get('error') or 'checker session returned no response')[:2000]
         return checked
 
     def close(self):
@@ -599,7 +660,15 @@ def main():
     a.add_argument('--selfhost-endpoint',help='optional loopback compiled-Ink score service; errors retain local ranking')
     a.add_argument('--discovery-accelerator',action='store_true',help='opt-in authenticated in-memory Bloom/learned discovery index')
     a.add_argument('--ann-hints',action='store_true',help='opt-in HNSW structural neighbourhood ordering; requires optional ann extra')
+    a.add_argument('--diagnostics',type=Path,help='write untrusted near-miss observations (matched laws the checker did not admit)')
+    a.add_argument('--egraph',action='store_true',help='also run equality saturation and keep its checked chain when cheaper')
+    a.add_argument('--egraph-nodes',type=int,default=4000)
+    a.add_argument('--modular-cache',type=Path,help='plan each function separately, reusing cached per-function chains as hints')
     args = a.parse_args()
+    def write_diagnostics(value):
+        if args.diagnostics:
+            args.diagnostics.parent.mkdir(parents=True,exist_ok=True)
+            args.diagnostics.write_text(json.dumps(value,separators=(',',':'))+'\n')
     if args.stream_alternatives and not args.alternatives:a.error('streaming requires --alternatives')
     if not 1<=args.search_restarts<=16:a.error('search restarts must be between 1 and 16')
     from ink_planner.stochastic_search import search_restarts
@@ -658,6 +727,8 @@ def main():
                     if args.search_trace:
                         args.search_trace.parent.mkdir(parents=True,exist_ok=True)
                         args.search_trace.write_text(json.dumps(dict(schema=1,source=package['input_core_sha256'],compiler_sha256=original_hash,snapshot=source_snapshot,cache_hit=True,rows=[]),indent=2)+'\n')
+                    from ink_planner.near_misses import NearMisses
+                    write_diagnostics(NearMisses().receipt(cache_hit=True))
                     print(json.dumps(dict(compiler_sha256=original_hash,cost_model=cost_model_receipt,cache=dict(key=cache_key,hit=True,authority='fresh local proof replay',evidence=json.loads(replay.stdout)))))
                     return
     with tempfile.TemporaryDirectory(prefix='ink-semantic-search-') as tmp:
@@ -674,7 +745,7 @@ def main():
             elif isinstance(v,list):
                 for x in v:walk(x)
         walk(subject)
-        generated, producer_receipts = generate(subject, json.loads(args.core.read_text()), store)
+        generated, producer_receipts = generate(subject, json.loads(args.core.read_text()), store, compiler=compiler)
         seeds=list(subject['functions'].values())+[obj['payload'][field]for obj in generated.values()for field in ['from','to']]
         roots = discover_roots(store, sorts.values(), seeds)
         if __package__:
@@ -692,9 +763,23 @@ def main():
             # An immutable derived catalogue transports proposals and exact
             # dependencies. Membership remains distinct from mathematical admission.
             discovery.update(generated)
+            # Generated instances may use published general laws; carry their
+            # closures too. A missing dependency only fails that proposal's check.
+            for dependency in sorted({d for o in generated.values() for d in o['dependencies']} - set(discovery)):
+                try:discovery.update(discovery_objects(store, [dependency]))
+                except ValueError:pass
             from ink_knowledge.proposal_views import ProposalViews
             store = ProposalViews(store, discovery, tmp / 'generated-knowledge')
             roots = sorted(set(roots) | set(generated))
+        # Guarded variants turn data-dependent premises of conditional laws
+        # that match this program into runtime tests (ink_knowledge.guarded_laws).
+        # Each variant is an ordinary law checked with its dependency closure.
+        guarded=guarded_variants(discovery,subject)
+        if guarded:
+            discovery.update(guarded)
+            from ink_knowledge.proposal_views import ProposalViews
+            store=ProposalViews(store if not isinstance(store,ProposalViews) else store.source,discovery,tmp/'guarded-knowledge')
+            roots=sorted(set(roots)|set(guarded))
         def law(e):return dict(schema=1,semantics=e['semantics'],dependencies=e['dependencies'],**e['payload'])
         certificates=[]
         if args.properties:
@@ -705,7 +790,11 @@ def main():
                 discovery.update(packet['knowledge']['objects'])
             from ink_knowledge.proposal_views import ProposalViews
             store=ProposalViews(store if not isinstance(store,ProposalViews)else store.source,discovery,tmp/'with-properties')
-        catalogue=dict(roots=sorted(roots),objects={i:law(e) for i,e in discovery.items() if e['kind']=='rewrite'},certificates=certificates)
+        objects={i:law(e) for i,e in discovery.items() if e['kind']=='rewrite'}
+        # Laws with type parameters or assumptions apply only through checked
+        # instances; they stay available as proof dependencies, not rewrite roots.
+        roots=[r for r in roots if r not in objects or not (objects[r].get('types') or objects[r].get('assumptions'))]
+        catalogue=dict(roots=sorted(roots),objects=objects,certificates=certificates)
         neighbourhood=None
         if args.ann_hints:
             from ink_planner.neighbourhood import Neighbourhood
@@ -748,19 +837,62 @@ def main():
                 else:
                     value=dict(package,applications=alternative,knowledge=store.bundle(selection_roots(alternative)))
                     alternative_output.write(json.dumps(value,separators=(',',':'))+'\n');alternative_output.flush()
+        from ink_planner.near_misses import NearMisses
+        near_misses=NearMisses(args.diagnostics)
         try:
             if not check([]): raise ValueError('compiler rejected the unchanged input')
             alternatives=Alternatives()
-            applications, receipt = search_restarts(search, subject, catalogue, check, budget=args.budget,
-                strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, scorer=scorer,
-                operation_costs=operation_costs, rounds=args.rounds, core_program=core_program,neighbourhood=neighbourhood,engine_strategy=args.strategy,
-                width=args.width,memory_bytes=args.memory_bytes,time_seconds=args.time_seconds,alternatives=alternatives,refresh=refresh)
-            receipt['incremental_discovery']=dict(visited_states=len(refreshed),batches=refresh_receipts,
-                scope='Reinstantiate ordinary database authoring data on admitted intermediate syntax; each complete application chain replayed')
+            budget,time_seconds=args.budget,args.time_seconds
+            saturation=None
+            if args.egraph:
+                # Saturation gets a third of the budgets; the beam keeps the rest.
+                from ink_planner.egraph import search as egraph_search
+                saturation=egraph_search(subject,catalogue,check,budget=budget//3,time_seconds=max(1,time_seconds//3),
+                    operation_costs=operation_costs,node_limit=args.egraph_nodes,alternatives=alternatives)
+                budget-=saturation[1]['attempts'];time_seconds=max(1,time_seconds-time_seconds//3)
+            if args.modular_cache:
+                from ink_planner.modular import plan as modular_plan
+                context=dict(compiler=original_hash,snapshot=store.snapshot_id if hasattr(store,'snapshot_id') else None,
+                    source_snapshot=source_snapshot,budget=args.budget,width=args.width,rounds=args.rounds,strategy=args.strategy,
+                    cost_model=None if cost_model_receipt is None else cost_model_receipt['sha256'])
+                applications, receipt = modular_plan(subject, catalogue, check, search, core_program, args.modular_cache, context,
+                    budget=budget, time_seconds=time_seconds, operation_costs=operation_costs, rounds=args.rounds,
+                    core_program=core_program, width=args.width, memory_bytes=args.memory_bytes, strategy=args.strategy,
+                    near_misses=near_misses, reason=lambda:checker.last_error)
+                from ink_planner.semantic_search import cost as structural
+                receipt.update(initial_cost=sum(structural(b, operation_costs) for b in subject['functions'].values()),
+                    search_policy=dict(strategy='modular'),check_rows=[],
+                    memo=dict(rounds=0,timed_out=False,memory_exhausted=False))
+                bodies=dict(subject['functions'])
+                for step in applications:
+                    law=catalogue['objects'][step['law']]
+                    bodies[step['function']]=replace(bodies[step['function']],step['path'],substitute(law['to'],step['arguments']))
+                receipt['selected_cost']=sum(structural(b, operation_costs) for b in bodies.values())
+            else:
+                applications, receipt = search_restarts(search, subject, catalogue, check, budget=budget,
+                    strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, scorer=scorer,
+                    operation_costs=operation_costs, rounds=args.rounds, core_program=core_program,neighbourhood=neighbourhood,engine_strategy=args.strategy,
+                    width=args.width,memory_bytes=args.memory_bytes,time_seconds=time_seconds,alternatives=alternatives,refresh=refresh,
+                    near_misses=near_misses,reason=lambda:checker.last_error)
+                receipt['incremental_discovery']=dict(visited_states=len(refreshed),batches=refresh_receipts,
+                    scope='Reinstantiate ordinary database authoring data on admitted intermediate syntax; each complete application chain replayed')
+            if saturation is not None:
+                receipt['egraph']=dict(saturation[1]['egraph'],selected_cost=saturation[1]['selected_cost'],
+                    beam_selected_cost=receipt['selected_cost'],chosen='egraph' if saturation[1]['selected_cost']<receipt['selected_cost'] else 'beam')
+                receipt['attempts']+=saturation[1]['attempts']
+                if saturation[1]['selected_cost']<receipt['selected_cost'] and saturation[0]:
+                    applications=saturation[0];receipt['selected_cost']=saturation[1]['selected_cost']
+            diagnostics=near_misses.receipt(complete=True,discovered_roots=len(roots),catalogue_rewrites=len(catalogue['objects']),
+                unavailable_functions=len(subject.get('unavailable',[])),attempts=receipt['attempts'],exhausted=receipt['exhausted'],
+                rounds=receipt['memo']['rounds'],timed_out=receipt['memo']['timed_out'],memory_exhausted=receipt['memo']['memory_exhausted'])
+            receipt['near_misses']={k:diagnostics[k] for k in ('totals','matched_laws','laws_with_admission','laws_only_rejected','reasons')}
+            write_diagnostics(diagnostics)
             if neighbourhood is not None:receipt['neighbourhood']=neighbourhood.receipt
             receipt['round_limit'] = args.rounds
             receipt['checker_sessions'] = dict(attempts=checker.session_attempts, admission_batches=checker.admission_batches, newly_admitted=checker.newly_admitted, rejected_closures=checker.rejected_closures, checked_roots=sorted(checker.checked_roots))
             if scorer is not None:receipt['selfhost']=dict(endpoint=scorer.endpoint,weights=list(scorer.weights),receipts=scorer.receipts,scope='exact word scores used only as search hints')
+            receipt['guarded_laws'] = dict(derived=len(guarded), applied=sum(1 for a in applications if a['law'] in guarded),
+                scope='Unconditional variants of data-dependent conditional laws; checked like any law')
             receipt['admission'] = 'each proposed application list and final output checked with its exact selected-law/premise dependency closure; unused discovery objects are not mathematical authority'
             package['applications'] = applications
             if not check(applications): raise ValueError('compiler rejected final selection')
