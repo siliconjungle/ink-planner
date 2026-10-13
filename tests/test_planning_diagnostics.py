@@ -51,6 +51,27 @@ class PlanningDiagnostics(unittest.TestCase):
         self.assertEqual(result['search']['recipes']['laws']['results']['proposal'],3)
         self.assertEqual(result['search']['recipes']['layouts']['reasons'], {'missing model':1})
 
+    def test_semantic_near_misses_merge_into_a_funnel(self):
+        value = receipt()
+        near = lambda rejected, shape: dict(status='diagnostic', recipe='semantic-laws', diagnostics=dict(
+            semantics='ink-search-near-misses-v1', totals=dict(matched=3, checked=2, admitted=1, rejected=rejected, unchecked=1),
+            reasons=dict(premise=rejected), premise_shapes={shape: rejected},
+            laws=dict(l=dict(matched=3, checked=2, admitted=1, rejected=rejected, unchecked=1,
+                             reasons=dict(premise=rejected), premises={shape: rejected}, samples=['premise 0 of l: no']))))
+        value['recipes'] = [near(1, 'a = b'), near(1, 'a = b'), dict(recipe='semantic-laws', status='visited', elapsed_seconds='2.5'),
+                            dict(recipe='index', status='visited', elapsed_seconds=4)]
+        value['edges'] = [dict(kinds=['rewrite']), dict(kinds=['representation'])]
+        result = diagnose(value)
+        self.assertEqual(result['semantic']['receipts'], 2)
+        self.assertEqual(result['semantic']['totals']['matched'], 6)
+        self.assertEqual(result['semantic']['premise_shapes'], {'a = b': 2})
+        self.assertEqual(result['semantic']['laws']['l']['rejected'], 2)
+        self.assertEqual(result['funnel']['semantic_rejected'], 2)
+        self.assertEqual(result['funnel']['admitted_edges'], {'rewrite': 1, 'representation': 1})
+        self.assertEqual(result['funnel']['last_gate'], 'measurement_failed')
+        self.assertEqual(result['recipe_seconds'], {'index': 4.0, 'semantic-laws': 2.5})
+        self.assertEqual(result['search']['recipes']['semantic-laws']['statuses']['diagnostic'], 2)
+
     def test_memory_constraints_and_observation_only_receipts(self):
         value = receipt();value.pop('measurement_acquisition')
         value['selection'] = dict(excluded={'b':'unmeasured memory'}, observations={'c':['sample']})

@@ -9,10 +9,19 @@ from .representation_selection import phase_workload
 
 RUNNER=Path(__file__).with_name('measure_calls.mjs')
 
+def validated(measurements,acquisition):
+    """Historical costs cannot resurrect a freshly rejected implementation."""
+    accepted=set(acquisition['validated_measurements'])
+    return [m for m in measurements if m in accepted]
+
 def read_workload(path):
     raw=path.read_bytes()
     if len(raw)>16_000_000:raise ValueError('measurement workload byte budget')
     v=json.loads(raw)
+    if not isinstance(v,dict):raise ValueError('measurement workload object')
+    if v.get('schema')==2:
+        from .state_measurements import read_workload as read_state
+        return read_state(path)
     if set(v)!={'schema','phases','profile','workload'} or v['schema']!=1:raise ValueError('measurement workload schema')
     if not isinstance(v['phases'],dict) or not 1<=len(v['phases'])<=64 or set(v['phases'])!=set(v['profile']):raise ValueError('measurement phases/profile mismatch')
     calls=0
@@ -29,12 +38,28 @@ def read_workload(path):
     # use different inputs and is never passed back to this acquisition step.
     return v,hashlib.sha256(raw).hexdigest()
 
-def target_context(planner):
+def independent_workloads(training,holdout):
+    first,_=read_workload(training);second,_=read_workload(holdout)
+    if first['schema']!=second['schema']:raise ValueError('holdout workload kind mismatch')
+    if first['profile']!=second['profile']:raise ValueError('holdout must retain the lifecycle objective weights')
+    if first['schema']==2:
+        from .state_measurements import fingerprints
+        if fingerprints(first)&fingerprints(second):raise ValueError('holdout state histories overlap selection histories')
+        return
+    def calls(spec):
+        return {json.dumps([row['function'],row['args']],sort_keys=True,separators=(',',':'),allow_nan=False)
+                for rows in spec['phases'].values()for row in rows}
+    if calls(first)&calls(second):raise ValueError('holdout inputs overlap selection inputs')
+
+def target_context(planner,state=False):
     if planner.options.target=='javascript':
         executable=shutil.which('node')
         if not executable:raise ValueError('offline measurement requires Node.js')
         version=subprocess.check_output([executable,'--version'],text=True).strip();runner=RUNNER
         bridge='trusted-values-v3;mean-complete-call;full-bit-aware-output-consumption'
+        if state:
+            from .state_measurements import RUNNER as runner
+            bridge='typed-bound-full-observation-v1;independent-state-history;portable-lifecycle;whole-host-peak-rss'
     elif planner.options.target=='rust':
         from .native_measurements import RUNNER as runner
         executable=shutil.which('rustc')
@@ -62,6 +87,9 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         if seconds<=0:raise ValueError('offline measurement acquisition time budget')
         return min(seconds,planner.options.check_timeout)
     spec,digest=read_workload(path)
+    if spec['schema']==2:
+        from .state_measurements import acquire as acquire_state
+        return acquire_state(planner,store,packages,states,measurements,path,controls)
     target=target_context(planner);controls=controls or {}
     workload=dict(spec['workload'])
     if set(workload)!={'shape','distribution','concurrency','residency'}:raise ValueError('measurement workload provenance fields')
@@ -94,9 +122,19 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     native_build=None
     if planner.options.target=='javascript':
         request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=phases,measurement=controls),allow_nan=False))
-        result=subprocess.run([shutil.which('node'),'--max-old-space-size='+str(max(32,min(4096,getattr(planner.options,'memory_bytes',512000000)//1000000))),str(RUNNER),str(request)],capture_output=True,text=True,timeout=remaining())
-        if result.returncode:raise ValueError('offline measurement failed: '+result.stderr[-2000:])
-        report=json.loads(result.stdout)
+        processes=1 if controls else getattr(planner.options,'measure_processes',3)
+        if type(processes) is not int or not 1<=processes<=8:raise ValueError('measurement process count')
+        reports=[]
+        for process in range(processes):
+            result=subprocess.run([shutil.which('node'),'--max-old-space-size='+str(max(32,min(4096,getattr(planner.options,'memory_bytes',512000000)//1000000))),str(RUNNER),str(request)],capture_output=True,text=True,timeout=remaining())
+            if result.returncode:raise ValueError('offline measurement failed: '+result.stderr[-2000:])
+            reports.append(json.loads(result.stdout))
+        accepted_everywhere={a['measurement']for a in artifacts}
+        for report in reports:accepted_everywhere&={row['measurement']for row in report['rows']}
+        fingerprints=reports[0]['input_fingerprints']
+        if any(r['input_fingerprints']!=fingerprints for r in reports):raise ValueError('measurement normalized inputs changed across processes')
+        report=dict(schema=1,processes=processes,rows=[dict(row,process=index)for index,r in enumerate(reports)for row in r['rows']if row['measurement']in accepted_everywhere],
+                    input_fingerprints=fingerprints,rejected=[row for r in reports for row in r['rejected']],module_load=[dict(row,process=index)for index,r in enumerate(reports)for row in r['module_load']])
     else:
         from .native_measurements import measure
         report,native_build=measure(planner,artifacts,phases,controls,deadline)
@@ -113,4 +151,4 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         obj=dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=row['measurement'],target=target,workload=phase_workload(workload,row['phase']),metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=None))
         observations.append(store.observe(obj));accepted.add(row['measurement'])
     if measurements[0] not in accepted:raise ValueError('baseline failed measurement validation')
-    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; average whole call and full result consumption; separate setup; no exact peak memory evidence; no runtime probes')
+    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; average whole call and full result consumption; separate setup; no exact peak memory evidence; no runtime probes')

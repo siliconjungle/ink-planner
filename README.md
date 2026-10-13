@@ -221,6 +221,24 @@ budget explicit; individual flags override the preset. See
 research references. Wider discovery still requires independent proof replay and
 comparable performance evidence before selection.
 
+## Conservative offline calibration
+
+Fresh pure JavaScript calibration runs three independent processes by default.
+Every candidate must preserve inputs and match the reference in every process.
+An alternative is chosen only when its largest observed weighted phase cost
+beats the baseline's smallest by at least 10%; these sample extrema are an
+empirical guard, not statistical confidence or an extrapolation model.
+`--measure-holdout` supplies disjoint typed inputs with identical objective
+weights. It may veto the frozen choice to baseline and never chooses another
+candidate. `--measure-processes`, `--measure-timeout` and
+`--minimum-measured-gain-ppm` make the acquisition budget and margin explicit.
+Module import and validation costs are reported separately from warm calls.
+This explicit multi-process and typed-holdout path uses pure JavaScript calls.
+The automatic path below also supports Rust JSON calls. Neither path measures
+state or migration lifecycles or exact peak memory. General lifecycle ranking
+can still consume externally supplied observations. No runtime probes or learned
+search are introduced.
+
 ## Automatic implementation choice
 
 Ordinary compiled planning refreshes installed database proposals on admitted
@@ -256,3 +274,41 @@ are published in the distribution's `reports/automatic-planning-2026-10-13`.
 
 Project code and documentation are [MIT licensed](LICENSE). Third-party dependencies,
 vendored projects and research data retain their own licenses and notices.
+
+## State lifecycle acquisition
+
+JavaScript source-state candidates can use explicit schema-2 workloads with
+`--measure-workload` and an independent `--measure-holdout`. The installed
+`producers.maintained_folds` recipe proposes proof-checked maintained maps and
+bounded dense prefixes. Every proposal is replayed before measurement.
+
+```json
+{
+  "schema": 2,
+  "setup": [{"call":"put","args":[0,7,true,false]}],
+  "phases": {
+    "load":{"kind":"module_load"},
+    "initialise":{"kind":"initialise"},
+    "update":{"kind":"history","calls":[
+      {"call":"put","args":[0,9,true,false]},
+      {"call":"total_query","args":[]}
+    ]},
+    "checkpoint":{"kind":"checkpoint"},
+    "restore":{"kind":"restore"}
+  },
+  "profile":{"load":1,"initialise":1,"update":10000,"checkpoint":1,"restore":1},
+  "workload":{"shape":{"rows":1},"distribution":"explicit","concurrency":1,"residency":"restored"}
+}
+```
+
+Each history resets to the same portable seed outside its timed window. The
+independent source evaluator supplies all results, errors, versions, events and
+exact snapshots. These must match before and after timing, and captured inputs
+must remain owned. Each candidate is measured in separate fresh processes; peak
+RSS includes the host and adapter. Setup, module load, checkpoint and restore costs
+have explicit weights. Missing comparable evidence retains the baseline.
+
+Holdout histories must differ from training transition histories, although setup
+and parameterless reads can recur. Holdout accepts or rejects the frozen winner.
+There are no application-time profitability probes. Current limits are 4,096 setup
+calls, 512 history calls, 64 phases, 1–8 processes and a 16 MB input workload.

@@ -7,6 +7,24 @@ import os,signal,subprocess,time
 from collections import deque
 
 
+def interleave_stages(jobs):
+    """Give each published stage a dispatch opportunity before its second job.
+
+    Stage names are untrusted scheduling data, never applicability or authority.
+    Keep within-stage order and every job; jobs without metadata retain FIFO.
+    """
+    groups={}
+    for job in jobs:
+        stage=(job.get('recipe')or{}).get('stage','')
+        groups.setdefault(stage,deque()).append(job)
+    ordered=[]
+    while groups:
+        for stage in list(groups):
+            ordered.append(groups[stage].popleft())
+            if not groups[stage]:del groups[stage]
+    return ordered
+
+
 def stop(process):
     # Kill the owned group even when its leader exited with live descendants.
     if os.name=='posix':
@@ -27,7 +45,7 @@ def run(jobs,workers,deadline,timeout,byte_limit=128_000_000):
     Jobs supply command, env, output, cache and log paths. Output is NDJSON;
     registry/header validation and mathematical admission belong to the caller.
     """
-    pending=deque(jobs);active=[]
+    pending=deque(interleave_stages(jobs));active=[]
     def launch(job):
         started=time.monotonic();output=job['output'];cached=job['cache'].exists()
         if cached:

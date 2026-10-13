@@ -43,7 +43,7 @@ def fingerprint(state):
         for fact in package['facts']:
             facts.add(identity({k:v for k,v in fact.items()if k!='proof'}))
     return identity(dict(source=state['source'],representation=(state.get('representation')or{}).get('representation'),
-        definitions=state.get('definition_choices')or{},physical=state.get('physical'),route=state.get('route'),resources=state.get('resources'),properties=sorted(facts)))
+        definitions=state.get('definition_choices')or{},physical=state.get('physical'),maintained=state.get('maintained'),route=state.get('route'),resources=state.get('resources'),properties=sorted(facts)))
 
 def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_seconds=3600,memory_bytes=512_000_000):
     """The callback boundary admits complete proof chains, never hash equality.
@@ -101,21 +101,44 @@ class Planner:
     def close(self):
         if self.session is not None:
             session=self.session;self.session=None
-            session.kill();session.wait();session.stdin.close();session.stdout.close();session.stderr.close()
-    def receive(self):
-        if not select.select([self.session.stdout],[],[],self.options.check_timeout)[0]:
-            self.close();raise ValueError('plan checker process time budget')
-        line=self.session.stdout.readline(128_000_001)
-        if not line.endswith('\n')or len(line)>128_000_000:self.close();raise ValueError('plan checker response byte budget')
-        return json.loads(line)
+            session.kill();session.wait();session.stdin.close();session.stdout.close();
+            if session.stderr is not None:session.stderr.close()
+    def receive(self,deadline=None):
+        deadline=deadline or time.monotonic()+self.options.check_timeout
+        buffer=getattr(self,'response_buffer',bytearray())
+        self.response_buffer=buffer
+        while True:
+            at=buffer.find(b'\n')
+            if at>=0:
+                line=bytes(buffer[:at]);del buffer[:at+1]
+                return json.loads(line)
+            remaining=deadline-time.monotonic()
+            if remaining<=0 or not select.select([self.session.stdout],[],[],remaining)[0]:
+                self.close();raise ValueError('plan checker process time budget')
+            chunk=os.read(self.session.stdout.fileno(),65536)
+            if not chunk or len(buffer)+len(chunk)>128_000_000:
+                self.close();raise ValueError('plan checker response byte budget')
+            buffer.extend(chunk)
+    def send(self,payload,deadline):
+        fd=self.session.stdin.fileno();os.set_blocking(fd,False);offset=0
+        while offset<len(payload):
+            remaining=deadline-time.monotonic()
+            if remaining<=0 or not select.select([],[fd],[],remaining)[1]:
+                self.close();raise ValueError('plan checker process time budget')
+            try:offset+=os.write(fd,payload[offset:offset+65536])
+            except BlockingIOError:continue
+            except BrokenPipeError:
+                self.close();raise ValueError('plan checker input closed')
     def check(self,package):
         key=identity(dict(compiler=self.compiler_hash,package=package))
         if key in self.admissions:return self.admissions[key]
         if self.session is None:
-            self.session=subprocess.Popen([str(self.compiler),'plan-session',str(self.original),'--target',self.options.target],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            self.session=subprocess.Popen([str(self.compiler),'plan-session',str(self.original),'--target',self.options.target],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+            self.response_buffer=bytearray()
             if not self.receive().get('ready'):self.close();raise ValueError('plan checker not ready')
-        self.session.stdin.write(canonical(package).decode()+'\n');self.session.stdin.flush()
-        receipt=self.receive()
+        deadline=time.monotonic()+self.options.check_timeout
+        self.send(canonical(package)+b'\n',deadline)
+        receipt=self.receive(deadline)
         if receipt.get('error'):raise ValueError(receipt['error'])
         if receipt.get('status')!='checked'or receipt.get('request_sha256',receipt.get('plan_sha256'))!=identity(package):raise ValueError('plan checker binding mismatch')
         self.reused_steps+=receipt.get('reused_steps',0)
@@ -180,6 +203,9 @@ class Planner:
                         headers.add(key);continue
                     status=row['status'];counts.setdefault(key,{})[status]=counts.get(key,{}).get(status,0)+1
                     if status=='declined':self.notes.append(dict(source=state['source'],recipe=name,**row));continue
+                    if status=='diagnostic':
+                        # Untrusted search observations for planning diagnostics only.
+                        self.notes.append(dict(source=state['source'],recipe=name,status='diagnostic',label=row.get('label'),diagnostics=row.get('diagnostics')));continue
                     if status=='migration':
                         before=self.directory/'migration-from.json';after=self.directory/'migration-to.json';bridge=self.directory/'migration.json';source=self.directory/'migration-core.json'
                         before.write_bytes(canonical(row['source'])+b'\n');after.write_bytes(canonical(row['target'])+b'\n');bridge.write_bytes(canonical(row['bridge'])+b'\n');source.write_bytes(canonical(state['core'])+b'\n')
@@ -233,9 +259,15 @@ def main():
     p.add_argument('--candidate-limit',type=int,default=4096);p.add_argument('--emit',type=Path)
     for name in ['profile','workload','target-profile']:p.add_argument('--'+name,type=Path)
     p.add_argument('--measure-workload',type=Path,help='acquire comparable offline observations before selection')
+    p.add_argument('--measure-holdout',type=Path,help='independent inputs that may reject, but never choose, the calibrated alternative')
+    p.add_argument('--minimum-measured-gain-ppm',type=int,default=100000,help='minimum observed lifecycle gain for freshly calibrated alternatives (default 10%%)')
     p.add_argument('--measure-timeout',type=int,default=120)
+    p.add_argument('--measure-processes',type=int,default=3,help='fresh offline timing processes, sharing the measurement time budget')
     p.add_argument('--measurement-mode',choices=['auto','off'],default='auto',help='automatically acquire bounded pure typed probes when no workload evidence exists')
     p.add_argument('--cache',choices=['auto','off'],default='auto',help='reuse same-epoch bounded plans with fresh proof replay')
+    p.add_argument('--work-workload',type=Path,help='reference-interpreter work of each candidate on these calls (deterministic, no timing)')
+    p.add_argument('--work-model',type=Path,help='held-out-validated work model; selects by reference work when no comparable timings exist')
+    p.add_argument('--keep-candidates',type=Path,help='write every admitted candidate package to this directory')
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
     args=effort_options(p.parse_args())
     if not 1<=args.recipe_workers<=8:p.error('recipe workers must be between 1 and 8')
@@ -244,6 +276,18 @@ def main():
     if args.state_limit<1 or args.memory_bytes<1 or args.check_timeout<1 or args.proposal_timeout<1:p.error('positive state/memory/process budgets required')
     if args.semantic_rounds is not None and args.semantic_rounds<0:p.error('semantic rounds must be nonnegative')
     if not 1<=args.measure_timeout<=600:p.error('measurement process budget must be between 1 and 600 seconds')
+    if not 1<=args.measure_processes<=8:p.error('measurement processes must be between 1 and 8')
+    if not 0<=args.minimum_measured_gain_ppm<1_000_000:p.error('minimum measured gain must be between 0 and 999999 ppm')
+    if args.measure_holdout and not args.measure_workload:p.error('holdout requires a measurement workload')
+    if args.measure_holdout and args.target!='javascript':p.error('typed holdout requires the JavaScript measurement adapter')
+    if args.measure_holdout:
+        from .offline_measurements import independent_workloads
+        independent_workloads(args.measure_workload,args.measure_holdout)
+    if args.work_model and not args.work_workload:p.error('--work-model needs --work-workload')
+    work_model=None
+    if args.work_model:
+        from .work_model import load as load_work_model
+        work_model=load_work_model(args.work_model)
     root=args.knowledge_root.resolve();compiler=args.compiler.resolve();store=Store(root,args.snapshot)
     store.ensure_index()
     registry,digest=load(args.registry,store)
@@ -264,7 +308,7 @@ def main():
         planner=Planner(compiler,original,root,directory,registry['recipes'],digest,args)
         from . import compiled_cache
         cache_key=compiled_cache.key(planner,source,store.snapshot_id,args,usage_profiles)
-        cached=compiled_cache.load(root,cache_key)if args.cache=='auto'else None
+        cached=compiled_cache.load(root,cache_key)if args.cache=='auto'and not args.measure_workload else None
         if cached is not None:
             try:
                 packet=cached['package']
@@ -309,14 +353,14 @@ def main():
                 args.measure_workload=directory/'automatic-probes.json';args.measure_workload.write_text(json.dumps(spec,allow_nan=False))
         if args.measure_workload:
             if any(getattr(args,n)is not None for n in ['profile','workload','target_profile']) or args.migration_count:raise ValueError('offline pure-call acquisition cannot combine existing profiles or migration')
-            from .offline_measurements import acquire
+            from .offline_measurements import acquire,validated
             from ink_knowledge.selection_probes import policy
             from .measured_selection import shortlist
-            controls=policy();checked_states=[s for _,s in states.values()]
-            indices=shortlist(checked_states,planner.priority,controls['candidates'])
+            controls=policy() if automatic_probe is not None else None;checked_states=[s for _,s in states.values()]
+            indices=shortlist(checked_states,planner.priority,controls['candidates']) if controls else list(range(len(packages)))
             try:
                 target,workload,profile,acquisition=acquire(planner,store,[packages[i]for i in indices],[checked_states[i]for i in indices],[measurements[i]for i in indices],args.measure_workload,controls)
-                acquisition['shortlist']=dict(measured_indices=indices,admitted=len(packages),limit=controls['candidates'],unmeasured_reason='bounded automatic measurement candidate budget')
+                acquisition['shortlist']=dict(measured_indices=indices,admitted=len(packages),limit=controls['candidates'] if controls else len(packages),unmeasured_reason='bounded automatic measurement candidate budget')
             except (ValueError,OSError,subprocess.TimeoutExpired)as error:
                 if automatic_probe is None:raise
                 automatic_probe['reason']='offline probes declined: '+str(error)[-2000:]
@@ -325,8 +369,11 @@ def main():
         if acquisition is not None or all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             if target.get('backend')!=args.target:raise ValueError('measurement backend must match emission lane')
             eligible=[m for m,(_,s)in zip(measurements,states.values())if s.get('capability',{}).get('emittable',True)]
-            chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,{m:'migrate:'+measurements[0]+':portable:'+m for m in measurements[1:]})
-            if acquisition is not None:
+            if acquisition is not None:eligible=validated(eligible,acquisition)
+            guard=dict(minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)if acquisition is not None and automatic_probe is None else {}
+            chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,
+                {m:'migrate:'+measurements[0]+':portable:'+m for m in measurements[1:]},**guard)
+            if acquisition is not None and automatic_probe is not None:
                 from .measured_selection import choose
                 setup={r['measurement']:int(r.get('setup_ns',float(r.get('module_load_ms','0'))*1000000))for r in acquisition['acquisition'].get('module_load',[])}
                 chosen,guard=choose(acquisition['acquisition'],profile,measurements[0],controls,setup)
@@ -334,7 +381,35 @@ def main():
                 selection['uncertainty_guard']=guard
                 selection['reason']=guard['reason']
                 selection['selected_measurement']=chosen
+            if acquisition is not None:
+                if args.measure_holdout:
+                    selected_indices=[0] if chosen==measurements[0] else [0,measurements.index(chosen)]
+                    held_target,held_workload,held_profile,held_acquisition=acquire(planner,store,[packages[i]for i in selected_indices],[list(states.values())[i][1]for i in selected_indices],[measurements[i]for i in selected_indices],args.measure_holdout)
+                    if set(acquisition['acquisition']['input_fingerprints'])&set(held_acquisition['acquisition']['input_fingerprints']):raise ValueError('holdout normalized typed inputs overlap selection inputs')
+                    if held_workload==workload:raise ValueError('holdout must have independent input provenance')
+                    if held_profile!=profile:raise ValueError('holdout must retain the lifecycle objective weights')
+                    held_choice,held_selection=rank(store,source,validated([measurements[i]for i in selected_indices],held_acquisition),held_target,held_workload,held_profile,measurements[0],
+                        minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)
+                    proposed=chosen
+                    if held_choice!=chosen:chosen=measurements[0]
+                    selection['holdout']=dict(proposed=proposed,accepted=chosen==proposed,selection=held_selection,acquisition=held_acquisition,
+                        scope='Independent rejection gate; holdout does not rank new alternatives')
             selected=packages[measurements.index(chosen)]
+        work=None
+        if args.work_workload:
+            from .work_model import acquire as acquire_work
+            work=acquire_work(planner,packages,[s for _,s in states.values()],measurements,args.work_workload)
+        # Timings, when present, always decide. The work model only replaces
+        # the evidence-free default, and only with a validated calibration.
+        if work_model is not None and selected is baseline and selection.get('reason','').startswith('missing comparable'):
+            from .work_model import select as select_by_work
+            eligible=[m for m,(_,s)in zip(measurements,states.values())if s.get('capability',{}).get('emittable',True)]
+            chosen,selection=select_by_work(work_model[0],work_model[1],work,measurements,eligible,measurements[0],
+                memory_limit=args.memory_limit,migration_count=args.migration_count)
+            selected=packages[measurements.index(chosen)]
+        if args.keep_candidates:
+            args.keep_candidates.mkdir(parents=True,exist_ok=True)
+            for m,package in zip(measurements,packages):(args.keep_candidates/(m+'.plan.json')).write_bytes(canonical(package)+b'\n')
         # A selected packet must also pass fresh whole-chain replay before emission.
         checked=planner.check(selected)
         replay=directory/'frozen-replay.json';replay.write_bytes(canonical(selected)+b'\n')
@@ -344,7 +419,7 @@ def main():
         args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(selected)+b'\n')
         receipt.update(dict(schema=1,semantics=SEMANTICS,status='checked',source=source,compiler_sha256=planner.compiler_hash,
             registry_sha256=digest,producer_sha256=planner.code_hash,planning_budgets=dict(effort=args.planning_effort,recipe_workers=args.recipe_workers,**{name:getattr(args,name)for name in EFFORTS['balanced']}),reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
-            selection=selection,automatic_probe=automatic_probe,measurement_acquisition=acquisition,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
+            selection=selection,automatic_probe=automatic_probe,measurement_acquisition=acquisition,work_acquisition=work,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
         from .planning_diagnostics import diagnose
         receipt['diagnostics']=diagnose(receipt)
         Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from ink_planner.semantic_search import search
 
 
@@ -7,6 +8,23 @@ def variable(name):
 
 
 class SearchProofAlternatives(unittest.TestCase):
+    def test_cost_defaults_are_read_once_per_search_and_refreshed_between_searches(self):
+        from ink_knowledge.cost_models import structural_prices
+        x=variable('x');source={'sort':x['sort'],'node':{'Op':['call:example',[x]]}}
+        law=dict(params={'x':x['sort']},conditions=[],**{'from':source,'to':x})
+        subject={'functions':{'a':source,'b':source}}
+        catalogue={'roots':['law'],'objects':{'law':law}}
+        defaults=structural_prices()
+        with patch('ink_knowledge.cost_models.structural_prices',return_value=dict(defaults,**{'call:example':10})) as reads:
+            apps,first=search(subject,catalogue,lambda _:True,width=1)
+            self.assertEqual(reads.call_count,1)
+            self.assertEqual(len(apps),2)
+        with patch('ink_knowledge.cost_models.structural_prices',return_value=dict(defaults,**{'call:example':20})):
+            _,second=search(subject,catalogue,lambda _:True,width=1)
+            _,override=search(subject,catalogue,lambda _:True,width=1,operation_costs={'call:example':3})
+        self.assertEqual(second['initial_cost']-first['initial_cost'],20)
+        self.assertEqual(first['initial_cost']-override['initial_cost'],14)
+
     def test_diverse_beam_retains_a_more_expensive_route_to_no_materialisation(self):
         x=variable('x'); seq={'sort':{'Value':{'List':'U32'}},'node':{'Free':'xs'}}
         op=lambda name,args:dict(sort=x['sort'],node={'Op':[name,args]})

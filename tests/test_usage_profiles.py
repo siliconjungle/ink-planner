@@ -35,6 +35,13 @@ class Usage(unittest.TestCase):
    self.assertEqual(select(None,'a'*64,['base','fast'],rows,'base')[0],'fast')
   with patch('ink_planner.usage_selection.rank',return_value=('base',dict(total_ns={'fast':'20'}))):
    self.assertEqual(select(None,'a'*64,['base','fast'],rows,'base')[0],'base')
+ def test_guarded_improvement_in_any_cohort_withholds_the_switch(self):
+  rows=[dict(profile(),evidence=['1']),dict(profile(distribution='two'),evidence=['2'])]
+  receipts=[('fast',dict(total_ns={'base':'100','fast':'20'})),
+            ('base',dict(total_ns={'base':'100','fast':'90'},uncertainty_guard=dict(excluded={'fast':'paired uncertainty'})))]
+  with patch('ink_planner.usage_selection.rank',side_effect=receipts):
+   selected,receipt=select(None,'a'*64,['base','fast'],rows,'base')
+  self.assertEqual(selected,'base');self.assertEqual(receipt['uncertainty_guard']['excluded'],{'fast':'paired uncertainty'})
  def test_arbitrary_database_context_not_only_named_cardinality_probe(self):
   u=value('U32');b=value('Bool');x=var(u,'x');subject=op(u,'binary:+',var(u,'a'),word('U32',1));left=op(b,'binary:==',x,x)
   l=law({'x':u},left,term(b,{'Bool':True}))

@@ -23,6 +23,55 @@ def exclusion_gate(reason):
     return 'selection_other'
 
 
+def semantic_observations(notes, laws_limit=64, shapes_limit=32):
+    """Merge per-state near-miss receipts from the semantic recipe.
+
+    Counts may revisit the same law at several admitted states. They describe
+    recorded proposals, not every applicable or latent rewrite.
+    """
+    totals = Counter(); reasons = Counter(); shapes = Counter(); instances = Counter(); laws = {}
+    receipts = 0
+    for note in notes:
+        value = note.get('diagnostics') if note.get('status') == 'diagnostic' else None
+        if not isinstance(value, dict) or value.get('semantics') != 'ink-search-near-misses-v1':
+            continue
+        receipts += 1
+        totals.update({k: v for k, v in (value.get('totals') or {}).items() if isinstance(v, int)})
+        reasons.update({k: v for k, v in (value.get('reasons') or {}).items() if isinstance(v, int)})
+        shapes.update({k: v for k, v in (value.get('premise_shapes') or {}).items() if isinstance(v, int)})
+        instances.update({k: v for k, v in (value.get('instance_shapes') or {}).items() if isinstance(v, int)})
+        for ident, entry in (value.get('laws') or {}).items():
+            merged = laws.setdefault(ident, dict(matched=0, checked=0, admitted=0, rejected=0, unchecked=0,
+                                                 reasons=Counter(), premises=Counter(), samples=[]))
+            for field in ('matched', 'checked', 'admitted', 'rejected', 'unchecked'):
+                merged[field] += int(entry.get(field, 0))
+            merged['reasons'].update(entry.get('reasons') or {})
+            merged['premises'].update(entry.get('premises') or {})
+            for sample in entry.get('samples') or []:
+                if len(merged['samples']) < 2 and sample not in merged['samples']:
+                    merged['samples'].append(sample)
+    ranked = sorted(laws.items(), key=lambda item: (-item[1]['rejected'], -item[1]['unchecked'], item[0]))
+    return dict(receipts=receipts, totals=dict(totals), reasons=dict(reasons),
+                premise_shapes=dict(shapes.most_common(shapes_limit)),
+                instance_shapes=dict(instances.most_common(shapes_limit)),
+                laws_matched=len(laws), laws_admitted=sum(1 for e in laws.values() if e['admitted']),
+                laws_only_rejected=sum(1 for e in laws.values() if e['rejected'] and not e['admitted']),
+                laws={ident: dict(entry, reasons=dict(entry['reasons']), premises=dict(entry['premises'].most_common(4)))
+                      for ident, entry in ranked[:laws_limit]},
+                scope='Untrusted search observations merged across admitted states; not proof or applicability claims')
+
+
+def recipe_seconds(notes):
+    """Wall time each recipe reported, summed across expanded states."""
+    seconds = Counter()
+    for note in notes:
+        try:
+            seconds[note.get('recipe', 'unknown')] += float(note.get('elapsed_seconds') or 0)
+        except (TypeError, ValueError):
+            continue
+    return {name: round(value, 3) for name, value in seconds.most_common()}
+
+
 def diagnose(receipt, expected=()):
     if not isinstance(receipt, dict):
         raise ValueError('planning receipt must be an object')
@@ -100,6 +149,22 @@ def diagnose(receipt, expected=()):
                                   reason=outcome['reason'] if outcome else
                                   'expected exact plan was not recorded; this does not exclude equivalent proof chains'))
     stop = receipt.get('stop_reason', 'unknown')
+    notes = receipt.get('recipes', [])
+    semantic = semantic_observations(notes)
+    edge_kinds = Counter(kind for edge in receipt.get('edges', []) for kind in edge.get('kinds', []))
+    gates = Counter(r['gate'] for r in outcomes)
+    funnel = dict(
+        semantic_matched=semantic['totals'].get('matched', 0),
+        semantic_checked=semantic['totals'].get('checked', 0),
+        semantic_admitted=semantic['totals'].get('admitted', 0),
+        semantic_rejected=semantic['totals'].get('rejected', 0),
+        semantic_unchecked=semantic['totals'].get('unchecked', 0),
+        plan_attempts=receipt.get('attempts'), plan_admitted_states=receipt.get('admitted_states'),
+        plan_rejected=len(receipt.get('rejected', [])), admitted_edges=dict(edge_kinds),
+        candidates=len(candidates), selected_alternative=gates.get('selected_alternative', 0) > 0,
+        last_gate=('selected_alternative' if gates.get('selected_alternative') else
+                   max((g for g in gates if g != 'selected_baseline'), key=lambda g: gates[g], default='no_alternative')),
+        scope='Recorded stage counts for this compilation only')
     return dict(schema=1, semantics='ink-planning-diagnostics-v1',
                 scope='Recorded gates only; no proof authority, no exhaustive applicability claim, no profitability claim on unseen inputs',
                 provenance='historical cached search and costs; selected replay reported separately' if cached else 'recorded planning invocation',
@@ -117,7 +182,8 @@ def diagnose(receipt, expected=()):
                               admitted_candidates=len(candidates) if 'candidates' in receipt else None, gates=dict(Counter(r['gate'] for r in outcomes)),
                               cache=receipt.get('cache'), probe=receipt.get('automatic_probe')),
                 candidates=outcomes, expected_opportunities=opportunities,
-                rejected_proofs=receipt.get('rejected', []))
+                rejected_proofs=receipt.get('rejected', []), funnel=funnel, semantic=semantic,
+                recipe_seconds=recipe_seconds(notes))
 
 
 def read(path):

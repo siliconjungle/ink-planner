@@ -13,7 +13,9 @@ from .route_selection import read
 def phase_workload(workload,phase):
     return dict(workload,distribution=dict(workload=workload['distribution'],phase=phase))
 
-def rank(store,program,plans,target,workload,counts,baseline,migration_count=0,memory_limit=None,migration_phases=None):
+def rank(store,program,plans,target,workload,counts,baseline,migration_count=0,memory_limit=None,migration_phases=None,*,minimum_gain_ppm=0,sample_guard=False):
+    if type(minimum_gain_ppm) is not int or not 0<=minimum_gain_ppm<1_000_000 or type(sample_guard) is not bool:
+        raise ValueError('invalid measured selection guard')
     if not isinstance(counts,dict) or not 1<=len(counts)<=64 or any(not isinstance(k,str) or not (1<=len(k)<=128 and k.isascii() and all(c.isalnum() or c in ':_-.' for c in k)) or type(v) is not int or not 0<=v<=1_000_000_000 for k,v in counts.items()):
         raise ValueError('invalid bounded lifecycle profile')
     if type(migration_count) is not int or not 0<=migration_count<=1_000_000:raise ValueError('invalid migration count')
@@ -22,7 +24,7 @@ def rank(store,program,plans,target,workload,counts,baseline,migration_count=0,m
     if not required:raise ValueError('lifecycle profile has no work')
     migration_phases=migration_phases or {}
     if migration_count:phases.update(migration_phases.get(p,'migrate:'+baseline) for p in plans if p!=baseline)
-    measured={p:{} for p in plans};evidence={p:[] for p in plans}
+    measured={p:{} for p in plans};evidence={p:[] for p in plans};ranges={p:{} for p in plans}
     for phase in sorted(phases):
         observations=store.iter_observations(program,plans,target,phase_workload(workload,phase)) if hasattr(store,"iter_observations")else store.observations(program,plans,target,phase_workload(workload,phase))
         grouped={}
@@ -34,6 +36,7 @@ def rank(store,program,plans,target,workload,counts,baseline,migration_count=0,m
             median=Fraction(samples[middle]) if len(samples)%2 else Fraction(samples[middle-1]+samples[middle],2)
             peaks=[obj['metrics']['peak_bytes'] for obj in objects]
             measured[plan][phase]=(median,max(peaks) if all(p is not None for p in peaks) else None)
+            ranges[plan][phase]=(min(samples),max(samples),len(samples))
             evidence[plan].extend(hashlib.sha256(__import__('ink_knowledge').canonical(obj)).hexdigest() for obj in objects)
     totals={};excluded={}
     for plan in plans:
@@ -46,13 +49,30 @@ def rank(store,program,plans,target,workload,counts,baseline,migration_count=0,m
             if any(p is None for p in peaks):excluded[plan]='unmeasured memory';continue
             if max(peaks)>memory_limit:excluded[plan]='measured memory exceeds limit';continue
         totals[plan]=sum((measured[plan][p][0]*n for p,n in weights.items()),Fraction(0))
-    selected=baseline
+    selected=baseline;bounds={};guard_excluded={}
+    if sample_guard:
+        for plan in totals:
+            weights=dict(required)
+            if migration_count and plan!=baseline:weights[migration_phases.get(plan,'migrate:'+baseline)]=migration_count
+            if any(ranges[plan][phase][2]<3 for phase in weights):
+                guard_excluded[plan]='insufficient timing samples';continue
+            bounds[plan]=dict(lower=sum(ranges[plan][phase][0]*n for phase,n in weights.items()),upper=sum(ranges[plan][phase][1]*n for phase,n in weights.items()))
     if baseline in totals:
         for plan in plans:
-            if plan in totals and totals[plan]<totals[selected]:selected=plan
+            if plan not in totals or plan==baseline:continue
+            if sample_guard:
+                if baseline not in bounds or plan not in bounds:continue
+                if bounds[plan]['upper']*1_000_000>=bounds[baseline]['lower']*(1_000_000-minimum_gain_ppm):
+                    guard_excluded[plan]='uncertainty or minimum gain guard';continue
+                if selected==baseline or bounds[plan]['upper']<bounds[selected]['upper']:selected=plan
+            elif totals[plan]*1_000_000<totals[baseline]*(1_000_000-minimum_gain_ppm) and totals[plan]<totals[selected]:selected=plan
     elif memory_limit is not None:
         raise ValueError('baseline cannot satisfy the measured memory constraint')
-    return selected,dict(total_ns={p:str(n) for p,n in totals.items()},excluded=excluded,observations={p:sorted(set(ids)) for p,ids in evidence.items()},baseline_comparable=baseline in totals)
+    result=dict(total_ns={p:str(n) for p,n in totals.items()},excluded=excluded,observations={p:sorted(set(ids)) for p,ids in evidence.items()},baseline_comparable=baseline in totals)
+    if sample_guard:
+        result['uncertainty_guard']=dict(minimum_gain_ppm=minimum_gain_ppm,estimates=bounds,excluded=guard_excluded,
+            scope='Observed sample extrema over weighted lifecycle phases; conservative empirical guard, not statistical confidence or extrapolation')
+    return selected,result
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)

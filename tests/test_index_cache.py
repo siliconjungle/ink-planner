@@ -32,11 +32,14 @@ class IndexCache(unittest.TestCase):
             with sqlite3.connect(path)as db:self.assertIn('witness_id',{r[1]for r in db.execute('PRAGMA table_info(members)')})
 
 class WarmIndex(unittest.TestCase):
-    def test_warm_ensure_does_not_rewrite_index_and_stale_pin_refreshes(self):
+    def test_warm_ensure_does_not_rebuild_index_and_stale_pin_refreshes(self):
         with tempfile.TemporaryDirectory()as tmp:
             obj=entry('definition','test',{'i':1});store=Store.publish(tmp,[obj]);self.assertTrue(store.ensure_index())
-            path=store.root/'index.sqlite';stamp=path.stat().st_mtime_ns
-            self.assertFalse(Store(tmp).ensure_index());self.assertEqual(path.stat().st_mtime_ns,stamp)
+            path=store.root/'index.sqlite';inode=path.stat().st_ino;before=store.bundle([identity(obj)])
+            # Warm recency hints may update SQLite metadata. They must not
+            # rebuild/replace the file or change authenticated membership.
+            self.assertFalse(Store(tmp).ensure_index());self.assertEqual(path.stat().st_ino,inode)
+            self.assertEqual(Store(tmp).bundle([identity(obj)]),before)
             store=store.extend([entry('definition','test',{'i':2})]);self.assertTrue(store.ensure_index())
             self.assertEqual(len(store.query(kind='definition')),2)
     def test_missing_pattern_tables_trigger_migration(self):

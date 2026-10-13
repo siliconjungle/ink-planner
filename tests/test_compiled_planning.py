@@ -2,6 +2,12 @@ import unittest
 from ink_planner.compiled_planning import explore
 
 class RecursivePlans(unittest.TestCase):
+    def test_maintained_roles_are_distinct_from_baseline_and_each_other(self):
+        from ink_planner.compiled_planning import fingerprint
+        baseline=dict(source='a'*64)
+        first=dict(baseline,maintained=dict(package_sha256='b'*64,keeps=['total']))
+        second=dict(baseline,maintained=dict(package_sha256='c'*64,keeps=['total']))
+        self.assertEqual(len({fingerprint(baseline),fingerprint(first),fingerprint(second)}),3)
     def test_semantic_search_instantiates_after_an_admitted_intermediate(self):
         from ink_planner.semantic_search import search
         from planner.tests.test_term_matching import var,term

@@ -40,14 +40,20 @@ class Matcher:
             for i,child in enumerate(self.children(term)):visit(child,path+(i,))
         visit(t,());return frozenset(out)
     def matches(self,target):
+        root=self.head(target)
+        ids=self.index.get(root,[])+self.index.get((root[0],'*'),[])
+        # No candidate can match this typed head. Avoid serialising an entire
+        # subtree just to cache a miss; add() exposes new heads immediately.
+        if not ids:
+            self.stats['cache_misses']+=1
+            return []
         fingerprint=self.key(target)
         if fingerprint in self.cache:
             self.stats['cache_hits']+=1
             result,size=self.cache.pop(fingerprint);self.cache[fingerprint]=(result,size)
             return result
-        self.stats['cache_misses']+=1;root=self.head(target)
-        ids=self.index.get(root,[])+self.index.get((root[0],'*'),[])
-        signature=self.signatures(target)if ids else frozenset();result=[]
+        self.stats['cache_misses']+=1
+        signature=self.signatures(target);result=[]
         for ident in ids:
             law=self.objects[ident]
             if not self.filters[ident]<=signature:

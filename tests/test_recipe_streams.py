@@ -24,6 +24,19 @@ class RecipeStreams(unittest.TestCase):
             done=[e for _,e in events if e['kind']=='done']
             self.assertTrue(all(isinstance(e['elapsed_seconds'],str)and Decimal(e['elapsed_seconds'])>=0 for e in done))
             canonical(dict(notes=done))
+    def test_dispatch_interleaves_stages_before_repeating_a_slow_stage(self):
+        with tempfile.TemporaryDirectory()as tmp:
+            jobs=self.jobs(Path(tmp),[
+                "import sys,time;f=open(sys.argv[1],'w');f.write('header\\n');f.flush();time.sleep(1)",
+                "import sys,time;f=open(sys.argv[1],'w');f.write('header\\n');f.flush();time.sleep(1)",
+                "import sys;open(sys.argv[1],'w').write('header\\nphysical-proposal\\n')"])
+            for job in jobs[:2]:job['recipe']={'stage':'rewrite'}
+            jobs[2]['recipe']={'stage':'physical'}
+            events=list(run(jobs,2,time.monotonic()+.5,3))
+            self.assertIn(('2',b'physical-proposal'),[(j['key'],e['raw'])for j,e in events if e['kind']=='line'])
+            from ink_planner.recipe_streams import interleave_stages
+            self.assertEqual([j['key']for j in interleave_stages(jobs)],['0','2','1'])
+            self.assertEqual([j['key']for j in interleave_stages([{k:v for k,v in j.items()if k!='recipe'}for j in jobs])],['0','1','2'])
     def test_deadline_closes_nested_processes_even_after_leader_exits(self):
         if os.name!='posix':self.skipTest('POSIX group lifecycle')
         with tempfile.TemporaryDirectory()as tmp:
@@ -32,7 +45,15 @@ class RecipeStreams(unittest.TestCase):
             jobs=self.jobs(root,[script]);events=list(run(jobs,1,time.monotonic()+3,2));pid=int(Path(str(jobs[0]['output'])+'.pid').read_text())
             import subprocess
             # Dead descendants may briefly be zombies, but cannot keep working.
-            status=subprocess.run(['ps','-o','stat=','-p',str(pid)],capture_output=True,text=True).stdout.strip()
+            # Group SIGKILL delivery is asynchronous, particularly for a child
+            # briefly waiting in the macOS kernel. Require eventual death within
+            # a bounded interval; accepting a live sleeping child would hide a
+            # regression that only killed the already exited group leader.
+            deadline=time.monotonic()+1
+            while True:
+                status=subprocess.run(['ps','-o','stat=','-p',str(pid)],capture_output=True,text=True).stdout.strip()
+                if not status or status.startswith('Z')or time.monotonic()>=deadline:break
+                time.sleep(.01)
             self.assertTrue(not status or status.startswith('Z'),status)
     def test_early_consumer_close_kills_worker(self):
         with tempfile.TemporaryDirectory()as tmp:
