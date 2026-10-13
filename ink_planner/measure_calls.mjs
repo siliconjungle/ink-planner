@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {performance} from 'node:perf_hooks';
+import {createHash} from 'node:crypto';
 const {artifacts,phases}=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 const rows=[],rejected=[],lanes=[];
 let sink=0,seed=0x7193abef;
@@ -23,9 +24,21 @@ function jsonCompatible(t,named,active=new Set()){
  if(t.kind==='record')return t.fields.every(x=>jsonCompatible(x.type,named,active));
  return false;
 }
+function normalizedInput(value,type){
+ if(type.kind==='f32'){
+  const words=new Uint32Array(1),floats=new Float32Array(words.buffer);
+  if(value&&typeof value==='object'&&Object.hasOwn(value,'F32Bits'))words[0]=value.F32Bits;else floats[0]=value;
+  return {f32_bits:words[0]};
+ }
+ if(['list','vector'].includes(type.kind))return value.map(v=>normalizedInput(v,type.element));
+ if(type.kind==='record')return type.fields.map(f=>[f.name,normalizedInput(value[f.name],f.type)]);
+ return value;
+}
+const input_fingerprints=new Set();
 for(const a of artifacts){
  try{
   const started=performance.now(),mod=await import(pathToFileURL(a.path));
+  const module_load_ms=String(performance.now()-started),validation_started=performance.now();
   if(mod.metadata.state!==null)throw Error('pure-call adapter does not measure state lifecycles');
   const captured=structuredClone(phases),calls=Object.values(captured).flat();
   for(const c of calls){
@@ -34,8 +47,12 @@ for(const a of artifacts){
    const before=structuredClone(c.args);
    assert.deepStrictEqual(mod.call(c.function,c.args),c.expected);
    assert.deepStrictEqual(c.args,before,'candidate mutated captured input');
+   if(a.measurement===artifacts[0].measurement){
+    const input=JSON.stringify([c.function,c.args.map((v,i)=>normalizedInput(v,f.params[i].type))]);
+    input_fingerprints.add(createHash('sha256').update(input).digest('hex'));
+   }
   }
-  lanes.push({...a,mod,phases:captured,original:structuredClone(captured),module_load_ms:String(performance.now()-started)});
+  lanes.push({...a,mod,phases:captured,original:structuredClone(captured),module_load_ms,validation_ms:String(performance.now()-validation_started)});
  }catch(e){rejected.push({measurement:a.measurement,reason:String(e)});}
 }
 if(!lanes.some(l=>l.measurement===artifacts[0].measurement))throw Error('baseline failed independent validation');
@@ -60,4 +77,4 @@ for(const l of lanes){try{
  valid.add(l.measurement);
 }catch(e){rejected.push({measurement:l.measurement,reason:String(e)});}}
 if(!valid.has(artifacts[0].measurement))throw Error('baseline failed post-measurement validation');
-console.log(JSON.stringify({schema:1,node:process.version,rows:rows.filter(r=>valid.has(r.measurement)),rejected,module_load:lanes.map(l=>({measurement:l.measurement,module_load_ms:l.module_load_ms})),sink}));
+console.log(JSON.stringify({schema:1,node:process.version,input_fingerprints:[...input_fingerprints].sort(),rows:rows.filter(r=>valid.has(r.measurement)),rejected,module_load:lanes.map(l=>({measurement:l.measurement,module_load_ms:l.module_load_ms,validation_ms:l.validation_ms})),sink}));

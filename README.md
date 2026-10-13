@@ -221,6 +221,23 @@ budget explicit; individual flags override the preset. See
 research references. Wider discovery still requires independent proof replay and
 comparable performance evidence before selection.
 
+## Conservative offline calibration
+
+Fresh pure JavaScript calibration runs three independent processes by default.
+Every candidate must preserve inputs and match the reference in every process.
+An alternative is chosen only when its largest observed weighted phase cost
+beats the baseline's smallest by at least 10%; these sample extrema are an
+empirical guard, not statistical confidence or an extrapolation model.
+`--measure-holdout` supplies disjoint typed inputs with identical objective
+weights. It may veto the frozen choice to baseline and never chooses another
+candidate. `--measure-processes`, `--measure-timeout` and
+`--minimum-measured-gain-ppm` make the acquisition budget and margin explicit.
+Module import and validation costs are reported separately from warm calls.
+The installed acquisition adapter remains pure JavaScript only; it does not
+measure state/setup/migration or exact peak memory. General lifecycle ranking
+can still consume externally supplied observations. No runtime probes or learned
+search are introduced.
+
 ## License
 
 Project code and documentation are [MIT licensed](LICENSE). Third-party dependencies,

@@ -61,4 +61,33 @@ class Selection(unittest.TestCase):
         self.assertEqual(self.choose({'action:query':1}),self.base)
         for counts in [{},{'action:query':-1},{'action:query':True},{'action:query':0}]:
             with self.assertRaises(ValueError):self.choose(counts)
+
+    def guarded(self,counts):
+        return rank(Store(self.records),self.source,[self.base,self.fast],self.target,self.workload,counts,self.base,
+                    minimum_gain_ppm=100000,sample_guard=True)
+
+    def samples(self,plan,phase,samples):
+        self.observe(plan,phase,samples[0]);self.records[-1]['metrics']['complete_call_ns']=list(map(str,samples))
+
+    def test_empirical_guard_rejects_overlapping_or_sparse_evidence(self):
+        self.samples(self.base,'action:query',[100,105,110]);self.samples(self.fast,'action:query',[50,55,500])
+        selected,receipt=self.guarded({'action:query':10});self.assertEqual(selected,self.base)
+        self.assertIn(self.fast,receipt['uncertainty_guard']['excluded'])
+        self.records[-1]['metrics']['complete_call_ns']=['50','55']
+        self.assertEqual(self.guarded({'action:query':10})[0],self.base)
+        self.records[-1]['metrics']['complete_call_ns']=['80','85','89']
+        self.assertEqual(self.guarded({'action:query':10})[0],self.fast)
+
+    def test_guard_prices_the_complete_lifecycle_not_only_fast_reads(self):
+        for plan,q,w in [(self.base,100,10),(self.fast,1,100)]:
+            self.samples(plan,'action:query',[q]*3);self.samples(plan,'action:write',[w]*3)
+        self.assertEqual(self.guarded({'action:query':100,'action:write':1})[0],self.fast)
+        self.assertEqual(self.guarded({'action:query':1,'action:write':100})[0],self.base)
+        self.assertEqual(self.guarded({'action:query':100,'restore':1})[0],self.base)
+
+    def test_guard_validates_policy_and_requires_gain_over_baseline(self):
+        for plan,time in [(self.base,100),(self.fast,95)]:self.samples(plan,'action:query',[time]*3)
+        self.assertEqual(self.guarded({'action:query':1})[0],self.base)
+        for gain in [-1,True,1_000_000]:
+            with self.assertRaises(ValueError):rank(Store(self.records),self.source,[self.base,self.fast],self.target,self.workload,{'action:query':1},self.base,minimum_gain_ppm=gain)
 if __name__=='__main__':unittest.main()

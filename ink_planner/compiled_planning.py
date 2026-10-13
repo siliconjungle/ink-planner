@@ -228,7 +228,10 @@ def main():
     p.add_argument('--candidate-limit',type=int,default=4096);p.add_argument('--emit',type=Path)
     for name in ['profile','workload','target-profile']:p.add_argument('--'+name,type=Path)
     p.add_argument('--measure-workload',type=Path,help='acquire comparable offline observations before selection')
+    p.add_argument('--measure-holdout',type=Path,help='independent inputs that may reject, but never choose, the calibrated alternative')
+    p.add_argument('--minimum-measured-gain-ppm',type=int,default=100000,help='minimum observed lifecycle gain for freshly calibrated alternatives (default 10%)')
     p.add_argument('--measure-timeout',type=int,default=120)
+    p.add_argument('--measure-processes',type=int,default=3,help='fresh offline timing processes, sharing the measurement time budget')
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
     args=effort_options(p.parse_args())
     if not 1<=args.recipe_workers<=8:p.error('recipe workers must be between 1 and 8')
@@ -237,6 +240,12 @@ def main():
     if args.state_limit<1 or args.memory_bytes<1 or args.check_timeout<1 or args.proposal_timeout<1:p.error('positive state/memory/process budgets required')
     if args.semantic_rounds is not None and args.semantic_rounds<0:p.error('semantic rounds must be nonnegative')
     if not 1<=args.measure_timeout<=600:p.error('measurement process budget must be between 1 and 600 seconds')
+    if not 1<=args.measure_processes<=8:p.error('measurement processes must be between 1 and 8')
+    if not 0<=args.minimum_measured_gain_ppm<1_000_000:p.error('minimum measured gain must be between 0 and 999999 ppm')
+    if args.measure_holdout and not args.measure_workload:p.error('holdout requires a measurement workload')
+    if args.measure_holdout:
+        from .offline_measurements import independent_workloads
+        independent_workloads(args.measure_workload,args.measure_holdout)
     root=args.knowledge_root.resolve();compiler=args.compiler.resolve();store=Store(root,args.snapshot)
     store.ensure_index()
     registry,digest=load(args.registry,store)
@@ -279,6 +288,21 @@ def main():
             if target.get('backend')!=args.target:raise ValueError('measurement backend must match emission lane')
             eligible=[m for m,(_,s)in zip(measurements,states.values())if s.get('capability',{}).get('emittable',True)]
             chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,{m:'migrate:'+measurements[0]+':portable:'+m for m in measurements[1:]})
+            if acquisition is not None:
+                chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,
+                    minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)
+                if args.measure_holdout:
+                    selected_indices=[0] if chosen==measurements[0] else [0,measurements.index(chosen)]
+                    held_target,held_workload,held_profile,held_acquisition=acquire(planner,store,[packages[i]for i in selected_indices],[list(states.values())[i][1]for i in selected_indices],[measurements[i]for i in selected_indices],args.measure_holdout)
+                    if set(acquisition['acquisition']['input_fingerprints'])&set(held_acquisition['acquisition']['input_fingerprints']):raise ValueError('holdout normalized typed inputs overlap selection inputs')
+                    if held_workload==workload:raise ValueError('holdout must have independent input provenance')
+                    if held_profile!=profile:raise ValueError('holdout must retain the lifecycle objective weights')
+                    held_choice,held_selection=rank(store,source,[measurements[i]for i in selected_indices],held_target,held_workload,held_profile,measurements[0],
+                        minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)
+                    proposed=chosen
+                    if held_choice!=chosen:chosen=measurements[0]
+                    selection['holdout']=dict(proposed=proposed,accepted=chosen==proposed,selection=held_selection,acquisition=held_acquisition,
+                        scope='Independent rejection gate; holdout does not rank new alternatives')
             selected=packages[measurements.index(chosen)]
         # A selected packet must also pass fresh whole-chain replay before emission.
         checked=planner.check(selected)

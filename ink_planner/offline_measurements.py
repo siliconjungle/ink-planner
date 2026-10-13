@@ -30,6 +30,14 @@ def read_workload(path):
     # use different inputs and is never passed back to this acquisition step.
     return v,hashlib.sha256(raw).hexdigest()
 
+def independent_workloads(training,holdout):
+    first,_=read_workload(training);second,_=read_workload(holdout)
+    if first['profile']!=second['profile']:raise ValueError('holdout must retain the lifecycle objective weights')
+    def calls(spec):
+        return {json.dumps([row['function'],row['args']],sort_keys=True,separators=(',',':'),allow_nan=False)
+                for rows in spec['phases'].values()for row in rows}
+    if calls(first)&calls(second):raise ValueError('holdout inputs overlap selection inputs')
+
 def acquire(planner,store,packages,states,measurements,path):
     spec,digest=read_workload(path)
     if planner.options.target!='javascript':raise ValueError('no installed offline measurement adapter for '+planner.options.target)
@@ -64,9 +72,24 @@ def acquire(planner,store,packages,states,measurements,path):
         except (ValueError,OSError,subprocess.TimeoutExpired)as error:rejected.append(dict(measurement=measurement,reason=str(error)[-2000:]))
     if not artifacts or artifacts[0]['measurement']!=measurements[0]:raise ValueError('baseline could not be measured')
     request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=phases),allow_nan=False))
-    result=subprocess.run([node,str(RUNNER),str(request)],capture_output=True,text=True,timeout=planner.options.measure_timeout)
-    if result.returncode:raise ValueError('offline measurement failed: '+result.stderr[-2000:])
-    report=json.loads(result.stdout);observations=[]
+    processes=getattr(planner.options,'measure_processes',3)
+    if type(processes) is not int or not 1<=processes<=8:raise ValueError('measurement process count')
+    reports=[];started=time.monotonic()
+    for process in range(processes):
+        remaining=planner.options.measure_timeout-(time.monotonic()-started)
+        if remaining<=0:raise ValueError('offline measurement process budget exhausted')
+        result=subprocess.run([node,str(RUNNER),str(request)],capture_output=True,text=True,timeout=remaining)
+        if result.returncode:raise ValueError('offline measurement failed: '+result.stderr[-2000:])
+        reports.append(json.loads(result.stdout))
+    # A candidate must validate in every fresh process. A timing from a rejected
+    # process cannot survive through another process's successful observation.
+    accepted_everywhere={a['measurement']for a in artifacts}
+    for report in reports:accepted_everywhere&={row['measurement']for row in report['rows']}
+    fingerprints=reports[0]['input_fingerprints']
+    if any(r['input_fingerprints']!=fingerprints for r in reports):raise ValueError('measurement normalized inputs changed across processes')
+    report=dict(schema=1,processes=processes,rows=[dict(row,process=index)for index,r in enumerate(reports)for row in r['rows']if row['measurement']in accepted_everywhere],
+                input_fingerprints=fingerprints,rejected=[row for r in reports for row in r['rejected']],module_load=[dict(row,process=index)for index,r in enumerate(reports)for row in r['module_load']])
+    observations=[]
     accepted=set()
     for row in report['rows']:
         if row['measurement'] not in {a['measurement']for a in artifacts} or row['phase'] not in spec['phases']:raise ValueError('measurement response binding mismatch')
