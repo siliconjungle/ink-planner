@@ -6,6 +6,23 @@ def term(name,*args):return dict(sort={'Value':'U32'},node={'Op':[name,list(args
 def var(name):return dict(sort={'Value':'U32'},node={'Free':name})
 
 class Matching(unittest.TestCase):
+    def test_unindexed_heads_do_not_serialize_or_retain_whole_subtrees(self):
+        calls=[]
+        def counted(value):
+            calls.append(value)
+            return key(value)
+        matcher=Matcher({},[],counted,children,match,substitute,100000)
+        source=term('absent',term('nested',var('x')))
+        self.assertEqual(matcher.matches(source),[])
+        self.assertEqual(calls,[source['sort']])
+        self.assertEqual(matcher.bytes,0)
+
+    def test_wildcard_heads_are_not_skipped_by_lazy_lookup(self):
+        x=var('x');law=dict(params={'x':x['sort']},conditions=[],**{'from':x,'to':term('wrap',x)})
+        matcher=Matcher({'wildcard':law},['wildcard'],key,children,match,substitute,100000)
+        target=term('previously-unseen',var('input'))
+        self.assertEqual(matcher.matches(target),[('wildcard',{'x':target},term('wrap',target))])
+
     def test_new_instance_invalidates_cached_misses_and_preserves_existing_matches(self):
         x=var('x');objects={}
         matcher=Matcher(objects,[],key,children,match,substitute,100000)

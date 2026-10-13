@@ -289,10 +289,16 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
     component_model = operation_costs if isinstance(operation_costs, TargetCostModel) else None
     if component_model is not None and core_program is None:
         raise ValueError('schema2 requires actual core parameter signatures')
+    # One immutable cost snapshot per search, not one resource read per body.
+    # A later search reads fresh defaults and applies its own caller overrides.
+    if component_model is None:
+        from ink_knowledge.cost_models import structural_prices
+        prices = structural_prices()
+        if operation_costs is not None: prices = dict(prices, **operation_costs)
     def score_bodies(bodies):
         if component_model is not None:
             return component_model.estimate_module(bodies, core_program)['score_ns']
-        return sum(cost(t, operation_costs) for t in bodies.values())
+        return sum(_cost(t, prices) for t in bodies.values())
     from ink_knowledge.cost_models import structural_components
     dimensions = ('allocation_events', 'traversal_elements', 'copy_bytes')
     component_prices = structural_components()
@@ -365,7 +371,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         # lower-ranked alternatives after filling it cannot improve that beam.
         # A rejection never marks a body seen or hides another proof of it.
         generated += len(pending)-old_pending
-        pending.sort(key=lambda x: (x[0], len(x[2]), key(x[1])))
+        pending.sort(key=lambda x: (x[0], len(x[2]), x[3]))
         if diverse and pending and width > 1:
             # Keep the cheapest proposal, then minima of different work profiles.
             # Never pretend repeated expressions are shared: each executed source
