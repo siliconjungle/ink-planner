@@ -41,6 +41,7 @@ const input_fingerprints=new Set();
 for(const a of artifacts){
  try{
   const started=performance.now(),mod=await import(pathToFileURL(a.path));
+  if(!mod.metadata||typeof mod.call!=='function')throw Error('artifact has no pure-call entries (a state representation module); the pure-call adapter measures pure entries only');
   const module_load_ms=String(performance.now()-started),validation_started=performance.now();
   if(mod.metadata.state!==null)throw Error('pure-call adapter does not measure state lifecycles');
   const captured=structuredClone(phases),calls=Object.values(captured).flat();
