@@ -13,7 +13,7 @@ ann = ["hnswlib==0.8.0", "numpy>=1.24,<3"]
 [tool.setuptools]
 packages = ["ink_planner"]
 [tool.setuptools.package-data]
-ink_planner = ["kernels/*.ink", "hosts/*.mjs", "*.mjs"]
+ink_planner = ["kernels/*.ink", "hosts/*.mjs", "*.mjs", "*.rs.txt"]
 [project.scripts]
 ink-plan = "ink_planner.semantic_search:main"
 ink-route = "ink_planner.source_routing:main"
