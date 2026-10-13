@@ -280,24 +280,25 @@ def main():
         acquisition=None
         if args.measure_workload:
             if any(getattr(args,n)is not None for n in ['profile','workload','target_profile']) or args.migration_count:raise ValueError('offline pure-call acquisition cannot combine existing profiles or migration')
-            from .offline_measurements import acquire
+            from .offline_measurements import acquire,validated
             target,workload,profile,acquisition=acquire(planner,store,packages,[s for _,s in states.values()],measurements,args.measure_workload)
         elif all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             profile=json.loads(args.profile.read_bytes());workload=json.loads(args.workload.read_bytes());target=json.loads(args.target_profile.read_bytes())
         if acquisition is not None or all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             if target.get('backend')!=args.target:raise ValueError('measurement backend must match emission lane')
             eligible=[m for m,(_,s)in zip(measurements,states.values())if s.get('capability',{}).get('emittable',True)]
-            chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,{m:'migrate:'+measurements[0]+':portable:'+m for m in measurements[1:]})
+            if acquisition is not None:eligible=validated(eligible,acquisition)
+            guard=dict(minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)if acquisition is not None else {}
+            chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,
+                {m:'migrate:'+measurements[0]+':portable:'+m for m in measurements[1:]},**guard)
             if acquisition is not None:
-                chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,
-                    minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)
                 if args.measure_holdout:
                     selected_indices=[0] if chosen==measurements[0] else [0,measurements.index(chosen)]
                     held_target,held_workload,held_profile,held_acquisition=acquire(planner,store,[packages[i]for i in selected_indices],[list(states.values())[i][1]for i in selected_indices],[measurements[i]for i in selected_indices],args.measure_holdout)
                     if set(acquisition['acquisition']['input_fingerprints'])&set(held_acquisition['acquisition']['input_fingerprints']):raise ValueError('holdout normalized typed inputs overlap selection inputs')
                     if held_workload==workload:raise ValueError('holdout must have independent input provenance')
                     if held_profile!=profile:raise ValueError('holdout must retain the lifecycle objective weights')
-                    held_choice,held_selection=rank(store,source,[measurements[i]for i in selected_indices],held_target,held_workload,held_profile,measurements[0],
+                    held_choice,held_selection=rank(store,source,validated([measurements[i]for i in selected_indices],held_acquisition),held_target,held_workload,held_profile,measurements[0],
                         minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)
                     proposed=chosen
                     if held_choice!=chosen:chosen=measurements[0]

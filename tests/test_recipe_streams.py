@@ -32,7 +32,15 @@ class RecipeStreams(unittest.TestCase):
             jobs=self.jobs(root,[script]);events=list(run(jobs,1,time.monotonic()+3,2));pid=int(Path(str(jobs[0]['output'])+'.pid').read_text())
             import subprocess
             # Dead descendants may briefly be zombies, but cannot keep working.
-            status=subprocess.run(['ps','-o','stat=','-p',str(pid)],capture_output=True,text=True).stdout.strip()
+            # Group SIGKILL delivery is asynchronous, particularly for a child
+            # briefly waiting in the macOS kernel. Require eventual death within
+            # a bounded interval; accepting a live sleeping child would hide a
+            # regression that only killed the already exited group leader.
+            deadline=time.monotonic()+1
+            while True:
+                status=subprocess.run(['ps','-o','stat=','-p',str(pid)],capture_output=True,text=True).stdout.strip()
+                if not status or status.startswith('Z')or time.monotonic()>=deadline:break
+                time.sleep(.01)
             self.assertTrue(not status or status.startswith('Z'),status)
     def test_early_consumer_close_kills_worker(self):
         with tempfile.TemporaryDirectory()as tmp:

@@ -2,7 +2,7 @@ import json,subprocess,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from ink_knowledge import Store
-from ink_planner.offline_measurements import read_workload,independent_workloads,acquire,RUNNER
+from ink_planner.offline_measurements import read_workload,independent_workloads,acquire,validated,RUNNER
 class OfflineMeasurements(unittest.TestCase):
     def test_input_fingerprints_use_typed_values_not_json_spelling(self):
         with tempfile.TemporaryDirectory()as tmp:
@@ -41,6 +41,14 @@ class OfflineMeasurements(unittest.TestCase):
             self.assertEqual(receipt['acquisition']['processes'],3)
             self.assertEqual({row['measurement']for row in receipt['acquisition']['rows']},{baseline})
             self.assertEqual({row['measurement']for row in receipt['rejected']},{candidate})
+            self.assertEqual(receipt['validated_measurements'],[baseline])
+            # Old successful measurements must not override a fresh rejection.
+            # Synthetic costs exercise this policy, not machine performance.
+            from ink_planner.representation_selection import rank
+            history=SimpleNamespace(iter_observations=lambda program,plans,target,workload:[dict(plan=m,metrics=dict(complete_call_ns=['1'if m==candidate else '100']*3,peak_bytes=None))for m in plans])
+            old,_=rank(history,'c'*64,[baseline,candidate],{}, {'distribution':'history'},{'call:run':1},baseline,sample_guard=True)
+            fresh,_=rank(history,'c'*64,validated([baseline,candidate],receipt),{}, {'distribution':'history'},{'call:run':1},baseline,sample_guard=True)
+            self.assertEqual(old,candidate);self.assertEqual(fresh,baseline)
             self.assertEqual(len(receipt['observations']),3)
     def test_holdout_checks_actual_input_disjointness_and_fixed_objective(self):
         with tempfile.TemporaryDirectory()as tmp:

@@ -10,6 +10,11 @@ from .representation_selection import phase_workload
 
 RUNNER=Path(__file__).with_name('measure_calls.mjs')
 
+def validated(measurements,acquisition):
+    """Historical costs cannot resurrect a freshly rejected implementation."""
+    accepted=set(acquisition['validated_measurements'])
+    return [m for m in measurements if m in accepted]
+
 def read_workload(path):
     raw=path.read_bytes()
     if len(raw)>16_000_000:raise ValueError('measurement workload byte budget')
@@ -97,4 +102,4 @@ def acquire(planner,store,packages,states,measurements,path):
         obj=dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=row['measurement'],target=target,workload=phase_workload(workload,row['phase']),metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=None))
         observations.append(store.observe(obj));accepted.add(row['measurement'])
     if measurements[0] not in accepted:raise ValueError('baseline failed measurement validation')
-    return target,workload,spec['profile'],dict(schema=1,adapter='pure-javascript-calls-v1',workload_sha256=digest,reference_seconds=reference_seconds,observations=observations,artifacts=artifacts,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; whole call and full result consumption; no exact peak memory evidence; no runtime probes')
+    return target,workload,spec['profile'],dict(schema=1,adapter='pure-javascript-calls-v1',workload_sha256=digest,reference_seconds=reference_seconds,observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; whole call and full result consumption; no exact peak memory evidence; no runtime probes')
