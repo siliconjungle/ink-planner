@@ -60,8 +60,8 @@ def check_package(compiler, source, core, package, staged, timeout,target=None):
         receipt = json.loads(invoke(compiler, ['check-selection', core, staged], timeout))
         if receipt.get('input_core_sha256') != package.get('input_core_sha256'):
             raise ValueError('selection checker receipt mismatch')
-    elif protocol == 'ink-source-representation-v1':
-        receipt = json.loads(invoke(compiler, ['check-representation', source, staged], timeout))
+    elif protocol in ('ink-source-representation-v1','ink-source-representation-v2'):
+        receipt = json.loads(invoke(compiler, ['check-representation', core, staged,'--core'], timeout))
         if (receipt.get('status') != 'checked' or
                 receipt.get('representation') != package.get('representation') or
                 receipt.get('source') != package.get('input_core_sha256')):
@@ -72,7 +72,7 @@ def emission_args(protocol, source, package, target, output):
     """Fixed CLI adapters for proof formats and lanes, never for algorithms."""
     if target not in TARGETS: raise ValueError('unknown emission lane')
     if protocol == 'ink-compiled-plan-v1':return ['emit-plan',source,package,'--target',target,'-o',output]
-    if protocol == 'ink-source-representation-v1':
+    if protocol in ('ink-source-representation-v1','ink-source-representation-v2'):
         return ['emit-representation', source, package, '--target', target, '-o', output]
     if protocol != 'ink-evidence-v1': raise ValueError('unsupported proof package protocol')
     if target == 'rust': args = ['emit-rust', source]

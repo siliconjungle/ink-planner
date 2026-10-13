@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-STRATEGIES = {'baseline','stochastic','learned','parallel','hnsw','accelerated-discovery'}
+STRATEGIES = {'baseline','stochastic','parallel','hnsw','accelerated-discovery'}
 
 
 def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -67,12 +67,11 @@ def main():
     p.add_argument('--snapshot',type=Path,required=True);p.add_argument('--knowledge-root',type=Path,required=True)
     p.add_argument('--profile',type=Path);p.add_argument('--target-context',type=Path,required=True)
     p.add_argument('--budget',type=int,default=128);p.add_argument('--rounds',type=int,default=12);p.add_argument('--seed',type=int,default=0)
-    p.add_argument('--search-model',type=Path);p.add_argument('-o',type=Path,required=True);a=p.parse_args()
+    p.add_argument('-o',type=Path,required=True);a=p.parse_args()
     if not 0<=a.budget<=4096 or not 0<=a.rounds<=64:p.error('bounded search budgets required')
     from ink_knowledge import Store
     context=dict(compiler=digest(a.compiler),core=digest(a.core),snapshot=digest(a.snapshot),
-        target=digest(a.target_context),code=code_identity(),python=list(sys.version_info[:3]),
-        model=None if a.search_model is None else digest(a.search_model))
+        target=digest(a.target_context),code=code_identity(),python=list(sys.version_info[:3]))
     core=json.loads(a.core.read_text())
     def count(value):return 1+sum(count(x) for x in value.values()) if isinstance(value,dict) else sum(count(x) for x in value) if isinstance(value,list) else 0
     features=dict(catalogue_entries=len(Store(a.knowledge_root,a.snapshot).members()),core_nodes=count(core),budget=a.budget,rounds=a.rounds)
@@ -83,15 +82,13 @@ def main():
             profile=json.loads(a.profile.read_text())
         except (OSError,ValueError):pass
     decision=select(profile,context,features);strategy=decision['strategy']
-    if strategy in ('learned','parallel') and a.search_model is None:strategy='baseline';decision=dict(strategy=strategy,reason='missing learned model')
     module='ink_planner.parallel_search' if strategy=='parallel' else 'ink_planner.semantic_search'
     command=[sys.executable,'-m',module,'--compiler',str(a.compiler.resolve()),'--core',str(a.core.resolve()),
         '--snapshot',str(a.snapshot.resolve()),'--knowledge-root',str(a.knowledge_root.resolve()),
         '--budget',str(a.budget),'--rounds',str(a.rounds),'-o',str(a.o.resolve())]
-    if strategy=='parallel':command+=['--workers','2','--seed',str(a.seed),'--search-model',str(a.search_model.resolve())]
-    elif strategy in ('stochastic','learned'):
+    if strategy=='parallel':command+=['--workers','2','--seed',str(a.seed)]
+    elif strategy=='stochastic':
         command+=['--search-strategy',strategy,'--search-restarts','4','--search-seed',str(a.seed)]
-        if strategy=='learned':command+=['--search-model',str(a.search_model.resolve())]
     elif strategy=='hnsw':command+=['--ann-hints']
     elif strategy=='accelerated-discovery':command+=['--discovery-accelerator']
     run=subprocess.run(command,capture_output=True,text=True,timeout=600)

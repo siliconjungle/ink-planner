@@ -146,12 +146,12 @@ These existing generic lifecycle phases need no compiler-specific pricing rule.
 ## Optional probabilistic search and compiled kernels
 
 `ink-plan` retains ordinary deterministic search by default. Opt-in
-`--search-strategy stochastic|learned --search-seed N --search-restarts 4`
+`--search-strategy stochastic --search-seed N --search-restarts 4`
 shares one bounded candidate-check budget across restarts and retains an ordinary
-first lane. `--search-trace TRACE.json` records actual checker outcomes and effort;
-`ink-fit-search --rows TRACE.json -o MODEL.json` fits acceptance and checker-effort
-hints. Learned search requires `--search-model MODEL.json`. A model predicts utility,
-never mathematical truth. All proposals and cached recipes still replay through
+first lane. Fixed structural scores and seeded randomness order proposals.
+`--search-trace TRACE.json` records checker outcomes and effort for diagnostics.
+The learned ranking model, its training command and `--search-model` are removed.
+All proposals and cached recipes still replay through
 the independent source-bound checker; failed proposals retain the baseline.
 
 `ink-synthesize --compiler INK --core CORE --function NAME --output-store STORE
@@ -183,7 +183,7 @@ ordinary lane. These disposable indexes confer no proof authority.
 
 Packaged `kernels/planner.ink` and `hosts/planner-kernels.mjs` execute bounded word
 feature scoring and candidate evaluation through ordinary compiled Ink backends.
-`--selfhost-endpoint http://127.0.0.1:PORT` connects stochastic/learned search to an
+`--selfhost-endpoint http://127.0.0.1:PORT` connects stochastic search to an
 optional loopback host; scores are independently compared and failures use local
 ranking. Synthesis supports the same host for one-register word evaluation. Python
 still coordinates graph search and the independent checker remains separate.

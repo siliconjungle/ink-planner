@@ -592,10 +592,9 @@ def main():
     a.add_argument('--properties',type=Path,help='source-bound property packets; final checker replays every reused premise')
     a.add_argument('--cache-dir',type=Path,help='bounded search-hint cache; every hit is proof-checked again')
     a.add_argument('--cache-context',type=Path,help='additional exact target/toolchain/workload/profile bytes in the cache key')
-    a.add_argument('--search-strategy',choices=['baseline','stochastic','learned'],default='baseline')
+    a.add_argument('--search-strategy',choices=['baseline','stochastic'],default='baseline')
     a.add_argument('--search-seed',type=int,default=0)
     a.add_argument('--search-restarts',type=int,default=4)
-    a.add_argument('--search-model',type=Path)
     a.add_argument('--search-trace',type=Path,help='offline admission observations; never proof authority')
     a.add_argument('--selfhost-endpoint',help='optional loopback compiled-Ink score service; errors retain local ranking')
     a.add_argument('--discovery-accelerator',action='store_true',help='opt-in authenticated in-memory Bloom/learned discovery index')
@@ -603,12 +602,10 @@ def main():
     args = a.parse_args()
     if args.stream_alternatives and not args.alternatives:a.error('streaming requires --alternatives')
     if not 1<=args.search_restarts<=16:a.error('search restarts must be between 1 and 16')
-    from ink_planner.search_policy import validate_model, search_restarts
-    search_model=validate_model(json.loads(args.search_model.read_text())) if args.search_model else None
-    if args.search_strategy=='learned' and search_model is None:a.error('learned search requires --search-model')
-    search_options=None if args.search_strategy=='baseline' else dict(strategy=args.search_strategy,seed=args.search_seed,restarts=args.search_restarts,model=search_model,selfhost_endpoint=args.selfhost_endpoint)
+    from ink_planner.stochastic_search import search_restarts
+    search_options=None if args.search_strategy=='baseline' else dict(strategy=args.search_strategy,seed=args.search_seed,restarts=args.search_restarts,selfhost_endpoint=args.selfhost_endpoint)
     if args.ann_hints:search_options={**(search_options or {}),'ann_hints':True,'ann_schema':'ink-structural-sketch-v1-64'}
-    if args.selfhost_endpoint and args.search_strategy=='baseline':a.error('selfhost endpoint requires stochastic or learned search')
+    if args.selfhost_endpoint and args.search_strategy=='baseline':a.error('selfhost endpoint requires stochastic search')
     if args.selfhost_endpoint:
         from ink_planner.selfhost import Scorer
         scorer=Scorer(args.selfhost_endpoint)
@@ -755,7 +752,7 @@ def main():
             if not check([]): raise ValueError('compiler rejected the unchanged input')
             alternatives=Alternatives()
             applications, receipt = search_restarts(search, subject, catalogue, check, budget=args.budget,
-                strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, model=search_model,scorer=scorer,
+                strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, scorer=scorer,
                 operation_costs=operation_costs, rounds=args.rounds, core_program=core_program,neighbourhood=neighbourhood,engine_strategy=args.strategy,
                 width=args.width,memory_bytes=args.memory_bytes,time_seconds=args.time_seconds,alternatives=alternatives,refresh=refresh)
             receipt['incremental_discovery']=dict(visited_states=len(refreshed),batches=refresh_receipts,
@@ -770,7 +767,7 @@ def main():
             if args.search_trace:
                 args.search_trace.parent.mkdir(parents=True,exist_ok=True)
                 args.search_trace.write_text(json.dumps(dict(schema=1,source=subject['input_core_sha256'],compiler_sha256=original_hash,
-                    snapshot=store.snapshot_id,policy=receipt['search_policy'],rows=receipt['training_rows']),indent=2)+'\n')
+                    snapshot=original_snapshot_id,policy=receipt['search_policy'],rows=receipt['check_rows']),indent=2)+'\n')
         finally:
             checker.close()
             if alternative_output is not None:alternative_output.close()

@@ -270,6 +270,8 @@ def main():
                 if args.emit:planner.invoke('emit-plan',original,replay,'--core','--target',args.target,'-o',args.emit)
                 args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(packet)+b'\n')
                 receipt=dict(cached['receipt'],cache=dict(hit=True,key=cache_key,origin_created_unix=cached['created_unix'],scope='Historical search/cost diagnostics reused; only selected full chain freshly replayed'))
+                from .planning_diagnostics import diagnose
+                receipt['diagnostics']=diagnose(receipt)
                 Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
                 print(json.dumps(dict(status='checked',cache=receipt['cache'],source=source,selected=identity(packet))))
                 planner.close();return
@@ -338,6 +340,8 @@ def main():
         receipt.update(dict(schema=1,semantics=SEMANTICS,status='checked',source=source,compiler_sha256=planner.compiler_hash,
             registry_sha256=digest,producer_sha256=planner.code_hash,planning_budgets=dict(effort=args.planning_effort,recipe_workers=args.recipe_workers,**{name:getattr(args,name)for name in EFFORTS['balanced']}),reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
             selection=selection,automatic_probe=automatic_probe,measurement_acquisition=acquisition,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
+        from .planning_diagnostics import diagnose
+        receipt['diagnostics']=diagnose(receipt)
         Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
         planner.close()
         if args.emit:
@@ -351,6 +355,6 @@ def main():
             args.measure_workload=None if automatic_probe is not None else args.measure_workload
             next_key=compiled_cache.key(planner,source,Store(root).snapshot_id,args,usage_profiles)
             compiled_cache.save(root,next_key,selected,receipt)
-        print(json.dumps({k:v for k,v in receipt.items()if k not in {'edges','rejected','recipes','candidates','coverage'}}))
+        print(json.dumps({k:v for k,v in receipt.items()if k not in {'edges','rejected','recipes','candidates','coverage','diagnostics'}}))
 
 if __name__=='__main__':main()

@@ -72,7 +72,7 @@ def run(jobs,workers,deadline,timeout,byte_limit=128_000_000):
                     if error is None and not state['rows']:error='missing recipe header'
                     if error is None and process is not None and process.returncode:error='recipe process exit '+str(process.returncode)
                     yield job,dict(kind='done',cached=state['cached'],complete=error is None,reason=error,
-                        elapsed_seconds=time.monotonic()-state['started'])
+                        elapsed_seconds=str(time.monotonic()-state['started']))
                     active.remove(state);progress=True
             if not progress:time.sleep(min(.01,max(0,deadline-time.monotonic())))
     finally:

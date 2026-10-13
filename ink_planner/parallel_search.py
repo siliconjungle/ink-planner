@@ -13,7 +13,7 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--compiler',type=Path,required=True);p.add_argument('--core',type=Path,required=True)
     p.add_argument('--snapshot',type=Path,required=True);p.add_argument('--knowledge-root',type=Path)
     p.add_argument('--workers',type=int,default=2);p.add_argument('--budget',type=int,default=128);p.add_argument('--rounds',type=int,default=12)
-    p.add_argument('--seed',type=int,default=0);p.add_argument('--search-model',type=Path);p.add_argument('--cost-model',type=Path)
+    p.add_argument('--seed',type=int,default=0);p.add_argument('--cost-model',type=Path)
     p.add_argument('--discovery-accelerator',action='store_true');p.add_argument('-o',type=Path,required=True)
     a=p.parse_args()
     if not 1<=a.workers<=16 or not 0<=a.budget<=4096 or not 0<=a.rounds<=64:p.error('bounded worker/search budgets required')
@@ -27,7 +27,6 @@ def main():
         def run(i,budget,strategy):
             output=tmp/('worker-'+str(i)+'.json');trace=tmp/('trace-'+str(i)+'.json')
             command=base+['--budget',str(budget),'-o',str(output),'--search-strategy',strategy,'--search-seed',str(a.seed+i),'--search-restarts','1','--search-trace',str(trace)]
-            if a.search_model and strategy=='learned':command += ['--search-model',str(a.search_model.resolve())]
             try:
                 result=subprocess.run(command,capture_output=True,text=True,timeout=300)
                 if result.returncode:return dict(worker=i,error=result.stderr[-4000:],budget=budget)
@@ -37,7 +36,7 @@ def main():
         if 'error' in baseline:raise ValueError('unchanged baseline failed: '+baseline['error'])
         quotas=[a.budget//a.workers+int(i<a.budget%a.workers) for i in range(a.workers)]
         with ThreadPoolExecutor(max_workers=a.workers) as pool:
-            futures=[pool.submit(run,i,b,'baseline' if i==0 else 'learned' if a.search_model else 'stochastic') for i,b in enumerate(quotas)]
+            futures=[pool.submit(run,i,b,'baseline' if i==0 else 'stochastic') for i,b in enumerate(quotas)]
             runs=[f.result() for f in futures]
         valid=[baseline]+[r for r in runs if 'receipt' in r]
         best=min(valid,key=lambda r:(r['receipt']['selected_cost'],r['worker']))
