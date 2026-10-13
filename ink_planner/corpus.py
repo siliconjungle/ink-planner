@@ -41,7 +41,7 @@ def clone_knowledge(source, destination):
                'index.sqlite', 'index.sqlite-wal', 'index.sqlite-shm'}
     def ignore(path, names):
         return set(names) & (omitted if Path(path) == source else {'__pycache__'})
-    shutil.copytree(source, destination, copy_function=os.link, ignore=ignore, symlinks=True)
+    shutil.copytree(source, destination, copy_function=private_file_copy, ignore=ignore, symlinks=True)
     if (source / 'store/snapshot.json').exists():
         from ink_knowledge import Store, identity
         publication = Store(source)
@@ -57,7 +57,7 @@ def clone_knowledge(source, destination):
                                      right=node if edge['left'] else sibling))
                 trees.add(node)
         data = destination / 'store'
-        shutil.copytree(publication.data, data, copy_function=os.link, symlinks=True,
+        shutil.copytree(publication.data, data, copy_function=private_file_copy, symlinks=True,
                         ignore=lambda _, names: set(names) & {'objects', 'trees', 'snapshots'})
         for directory, ids in [('objects', members), ('trees', trees), ('snapshots', [publication.snapshot_id])]:
             (data / directory).mkdir()
@@ -66,7 +66,7 @@ def clone_knowledge(source, destination):
         if Store(source).snapshot_id != publication.snapshot_id:
             raise ValueError('knowledge publication changed during corpus isolation')
     elif (source / 'store').exists():
-        shutil.copytree(source / 'store', destination / 'store', copy_function=os.link, symlinks=True)
+        shutil.copytree(source / 'store', destination / 'store', copy_function=private_file_copy, symlinks=True)
     index = source / 'index.sqlite'
     if index.exists():
         with sqlite3.connect(index.as_uri() + '?mode=ro', uri=True) as original:
@@ -128,13 +128,26 @@ def candidate_references(root, receipt):
     return references
 
 
+MUTABLE_SUFFIXES = ('.sqlite', '.sqlite-wal', '.sqlite-shm', '.sqlite-journal')
+
+
+def private_file_copy(source, destination):
+    name = Path(source).name
+    if name.endswith(MUTABLE_SUFFIXES) or name == 'index-published.json':
+        return shutil.copy2(source, destination)
+    return os.link(source, destination)
+
+
+def private_copy(root, scratch):
+    """Keep the upstream API, with a pinned publication and private indexes."""
+    return clone_knowledge(root, scratch)
+
+
 def run_program(program, manifest_dir, args, out):
     record = dict(name=program['name'], split=program['split'])
     with tempfile.TemporaryDirectory(prefix='ink-corpus-', dir=args.scratch) as temporary:
         scratch = Path(temporary) / 'knowledge'
-        # Hard links: published objects are new immutable files and pointers
-        # are replaced atomically, so the shared checkout is never rewritten.
-        clone_knowledge(args.knowledge_root, scratch)
+        private_copy(args.knowledge_root, scratch)
         plan = out / 'plans' / f"{program['name']}.json"
         plan.parent.mkdir(parents=True, exist_ok=True)
         command = [sys.executable, '-m', 'ink_planner.compiled_planning', '--compiler', str(args.compiler),
