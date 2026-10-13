@@ -235,7 +235,14 @@ def condition_candidates(goal,catalogue,limit=4,depth=0,active=None,work=None):
     return result
 
 
-def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operation_costs=None, core_program=None, diverse=True, strategy="memo", memory_bytes=256_000_000, time_seconds=600, alternatives=None, policy=None, neighbourhood=None, refresh=None):
+def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operation_costs=None, core_program=None, diverse=True, strategy="memo", memory_bytes=256_000_000, time_seconds=600, alternatives=None, policy=None, neighbourhood=None, refresh=None, near_misses=None, reason=None):
+    """`near_misses` optionally records matched-but-unadmitted proposals and
+    `reason` returns the checker's last rejection message. Both are diagnostics
+    only: they never change ordering, admission or the selected result."""
+    def last_reason():
+        if reason is None:return None
+        try:return reason()
+        except Exception as error:return 'reason unavailable: '+str(error)[:200]
     if strategy not in {"memo","beam"}:raise ValueError("unknown search strategy")
     if budget<0 or width<1 or memory_bytes<1 or time_seconds<0 or (rounds is not None and rounds<0):raise ValueError("search budgets")
     started=time.monotonic();deferred=[];memo_edges=[];iteration=0;memory_exhausted=False;timed_out=False;prefix_states={}
@@ -314,6 +321,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                         pending_bytes+=size;pending_seen.add(proposal_key)
                         score = score_bodies(updated)
                         pending.append((score, updated, proposal, fingerprint, law, args))
+                        if near_misses is not None:near_misses.matched(ident, law)
         # Rank untrusted proposals before spending bounded checker work. Only
         # the best `width` admitted bodies can enter the next beam; checking
         # lower-ranked alternatives after filling it cannot improve that beam.
@@ -339,7 +347,9 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         candidates = []
         processed=0
         for processed, (score, updated, proposal, fingerprint, law, args) in enumerate(pending,1):
-            if fingerprint in seen: continue
+            if fingerprint in seen:
+                if near_misses is not None:near_misses.duplicate(proposal[-1]['law'], law)
+                continue
             if time.monotonic()-started>=time_seconds:timed_out=True;processed-=1;break
             if checked >= budget: exhausted = True; processed-=1; break
             checked += 1
@@ -349,6 +359,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
             if not admit(proposal):
                 rejected += 1
                 step = proposal[-1]
+                first_reason = last_reason()
                 choices=[condition_candidates(dict(**{'from':substitute(c['from'],args),'to':substitute(c['to'],args)}),catalogue)for c in law['conditions']]
                 accepted=False
                 for premises in itertools.islice(itertools.product(*choices),16):
@@ -359,7 +370,10 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                     trial=proposal[:-1]+[dict(step,premises=premises)];checked+=1
                     if admit(trial):proposal=trial;accepted=True;break
                     rejected+=1
-                if not accepted:continue
+                if not accepted:
+                    if near_misses is not None:near_misses.checked(step['law'], law, False, last_reason() or first_reason, args)
+                    continue
+            if near_misses is not None:near_misses.checked(proposal[-1]['law'], law, True)
             seen.add(fingerprint)
             memo_bytes+=len(fingerprint.encode())+len(key(proposal).encode())
             if alternatives is not None:alternatives.append(proposal)
@@ -377,6 +391,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                 size=len(item[3].encode())+len(key(item[2]).encode())
                 if memo_bytes+retained+size+matcher.bytes>memory_bytes:memory_exhausted=True;break
                 deferred.append(item);retained+=size
+        if near_misses is not None and hasattr(near_misses,'flush'):near_misses.flush(complete=False,rounds=iteration)
         if exhausted or memory_exhausted or timed_out:break
         if not candidates and not deferred:break
         frontier = candidates
@@ -449,6 +464,8 @@ class SelectionChecker:
         self.admission_batches = 0
         self.newly_admitted = 0
         self.rejected_closures = 0
+        # Diagnostic text of the last rejection; never proof or selection authority.
+        self.last_error = None
 
     @staticmethod
     def close_session(session):
@@ -459,6 +476,7 @@ class SelectionChecker:
         session.stdout.close(); session.stderr.close()
 
     def check(self, applications):
+        self.last_error = None
         # Admission and proof requests share the CLI's fixed session lease.
         # Reserve two requests for an extension followed by its proof check.
         for key_, process in list(self.sessions.items()):
@@ -481,8 +499,9 @@ class SelectionChecker:
                 self.sessions[available] = session
             else:
                 try: bundle = self.store.bundle(roots)
-                except ValueError:
+                except ValueError as error:
                     self.rejected_closures += 1
+                    self.last_error = 'closure: ' + str(error)[:400]
                     return False
                 candidates = [k for k,s in self.sessions.items() if s in self.incremental_sessions]
                 extended = False
@@ -502,6 +521,7 @@ class SelectionChecker:
                         extended = True
                     elif result.get('error') != 'knowledge view schema/size limit':
                         self.rejected_closures += 1
+                        self.last_error = 'closure: admission rejected: ' + str(result.get('error'))[:400]
                         return False
                     # A full union does not make a separately bounded closure invalid.
                 if not extended:
@@ -521,6 +541,7 @@ class SelectionChecker:
                     if not capability.get('ready'):
                         self.close_session(session)
                         self.rejected_closures += 1
+                        self.last_error = 'closure: checker session not ready'
                         return False
                     self.sessions[roots] = session
                     self.session_requests[session] = 0
@@ -530,8 +551,10 @@ class SelectionChecker:
         self.session_requests[session] += 1
         session.stdin.write(json.dumps(applications) + '\n'); session.stdin.flush()
         response = session.stdout.readline()
-        checked = bool(response and json.loads(response).get('checked'))
+        result = json.loads(response) if response else {}
+        checked = bool(result.get('checked'))
         if checked: self.checked_roots.update(roots)
+        else: self.last_error = str(result.get('error') or 'checker session returned no response')[:2000]
         return checked
 
     def close(self):
@@ -599,7 +622,12 @@ def main():
     a.add_argument('--selfhost-endpoint',help='optional loopback compiled-Ink score service; errors retain local ranking')
     a.add_argument('--discovery-accelerator',action='store_true',help='opt-in authenticated in-memory Bloom/learned discovery index')
     a.add_argument('--ann-hints',action='store_true',help='opt-in HNSW structural neighbourhood ordering; requires optional ann extra')
+    a.add_argument('--diagnostics',type=Path,help='write untrusted near-miss observations (matched laws the checker did not admit)')
     args = a.parse_args()
+    def write_diagnostics(value):
+        if args.diagnostics:
+            args.diagnostics.parent.mkdir(parents=True,exist_ok=True)
+            args.diagnostics.write_text(json.dumps(value,separators=(',',':'))+'\n')
     if args.stream_alternatives and not args.alternatives:a.error('streaming requires --alternatives')
     if not 1<=args.search_restarts<=16:a.error('search restarts must be between 1 and 16')
     from ink_planner.stochastic_search import search_restarts
@@ -658,6 +686,8 @@ def main():
                     if args.search_trace:
                         args.search_trace.parent.mkdir(parents=True,exist_ok=True)
                         args.search_trace.write_text(json.dumps(dict(schema=1,source=package['input_core_sha256'],compiler_sha256=original_hash,snapshot=source_snapshot,cache_hit=True,rows=[]),indent=2)+'\n')
+                    from ink_planner.near_misses import NearMisses
+                    write_diagnostics(NearMisses().receipt(cache_hit=True))
                     print(json.dumps(dict(compiler_sha256=original_hash,cost_model=cost_model_receipt,cache=dict(key=cache_key,hit=True,authority='fresh local proof replay',evidence=json.loads(replay.stdout)))))
                     return
     with tempfile.TemporaryDirectory(prefix='ink-semantic-search-') as tmp:
@@ -674,7 +704,7 @@ def main():
             elif isinstance(v,list):
                 for x in v:walk(x)
         walk(subject)
-        generated, producer_receipts = generate(subject, json.loads(args.core.read_text()), store)
+        generated, producer_receipts = generate(subject, json.loads(args.core.read_text()), store, compiler=compiler)
         seeds=list(subject['functions'].values())+[obj['payload'][field]for obj in generated.values()for field in ['from','to']]
         roots = discover_roots(store, sorts.values(), seeds)
         if __package__:
@@ -692,6 +722,11 @@ def main():
             # An immutable derived catalogue transports proposals and exact
             # dependencies. Membership remains distinct from mathematical admission.
             discovery.update(generated)
+            # Generated instances may use published general laws; carry their
+            # closures too. A missing dependency only fails that proposal's check.
+            for dependency in sorted({d for o in generated.values() for d in o['dependencies']} - set(discovery)):
+                try:discovery.update(discovery_objects(store, [dependency]))
+                except ValueError:pass
             from ink_knowledge.proposal_views import ProposalViews
             store = ProposalViews(store, discovery, tmp / 'generated-knowledge')
             roots = sorted(set(roots) | set(generated))
@@ -705,7 +740,11 @@ def main():
                 discovery.update(packet['knowledge']['objects'])
             from ink_knowledge.proposal_views import ProposalViews
             store=ProposalViews(store if not isinstance(store,ProposalViews)else store.source,discovery,tmp/'with-properties')
-        catalogue=dict(roots=sorted(roots),objects={i:law(e) for i,e in discovery.items() if e['kind']=='rewrite'},certificates=certificates)
+        objects={i:law(e) for i,e in discovery.items() if e['kind']=='rewrite'}
+        # Laws with type parameters or assumptions apply only through checked
+        # instances; they stay available as proof dependencies, not rewrite roots.
+        roots=[r for r in roots if r not in objects or not (objects[r].get('types') or objects[r].get('assumptions'))]
+        catalogue=dict(roots=sorted(roots),objects=objects,certificates=certificates)
         neighbourhood=None
         if args.ann_hints:
             from ink_planner.neighbourhood import Neighbourhood
@@ -748,15 +787,23 @@ def main():
                 else:
                     value=dict(package,applications=alternative,knowledge=store.bundle(selection_roots(alternative)))
                     alternative_output.write(json.dumps(value,separators=(',',':'))+'\n');alternative_output.flush()
+        from ink_planner.near_misses import NearMisses
+        near_misses=NearMisses(args.diagnostics)
         try:
             if not check([]): raise ValueError('compiler rejected the unchanged input')
             alternatives=Alternatives()
             applications, receipt = search_restarts(search, subject, catalogue, check, budget=args.budget,
                 strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, scorer=scorer,
                 operation_costs=operation_costs, rounds=args.rounds, core_program=core_program,neighbourhood=neighbourhood,engine_strategy=args.strategy,
-                width=args.width,memory_bytes=args.memory_bytes,time_seconds=args.time_seconds,alternatives=alternatives,refresh=refresh)
+                width=args.width,memory_bytes=args.memory_bytes,time_seconds=args.time_seconds,alternatives=alternatives,refresh=refresh,
+                near_misses=near_misses,reason=lambda:checker.last_error)
             receipt['incremental_discovery']=dict(visited_states=len(refreshed),batches=refresh_receipts,
                 scope='Reinstantiate ordinary database authoring data on admitted intermediate syntax; each complete application chain replayed')
+            diagnostics=near_misses.receipt(complete=True,discovered_roots=len(roots),catalogue_rewrites=len(catalogue['objects']),
+                unavailable_functions=len(subject.get('unavailable',[])),attempts=receipt['attempts'],exhausted=receipt['exhausted'],
+                rounds=receipt['memo']['rounds'],timed_out=receipt['memo']['timed_out'],memory_exhausted=receipt['memo']['memory_exhausted'])
+            receipt['near_misses']={k:diagnostics[k] for k in ('totals','matched_laws','laws_with_admission','laws_only_rejected','reasons')}
+            write_diagnostics(diagnostics)
             if neighbourhood is not None:receipt['neighbourhood']=neighbourhood.receipt
             receipt['round_limit'] = args.rounds
             receipt['checker_sessions'] = dict(attempts=checker.session_attempts, admission_batches=checker.admission_batches, newly_admitted=checker.newly_admitted, rejected_closures=checker.rejected_closures, checked_roots=sorted(checker.checked_roots))

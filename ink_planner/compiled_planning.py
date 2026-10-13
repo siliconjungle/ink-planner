@@ -180,6 +180,9 @@ class Planner:
                         headers.add(key);continue
                     status=row['status'];counts.setdefault(key,{})[status]=counts.get(key,{}).get(status,0)+1
                     if status=='declined':self.notes.append(dict(source=state['source'],recipe=name,**row));continue
+                    if status=='diagnostic':
+                        # Untrusted search observations for planning diagnostics only.
+                        self.notes.append(dict(source=state['source'],recipe=name,status='diagnostic',label=row.get('label'),diagnostics=row.get('diagnostics')));continue
                     if status=='migration':
                         before=self.directory/'migration-from.json';after=self.directory/'migration-to.json';bridge=self.directory/'migration.json';source=self.directory/'migration-core.json'
                         before.write_bytes(canonical(row['source'])+b'\n');after.write_bytes(canonical(row['target'])+b'\n');bridge.write_bytes(canonical(row['bridge'])+b'\n');source.write_bytes(canonical(state['core'])+b'\n')
