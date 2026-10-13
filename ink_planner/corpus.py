@@ -47,7 +47,14 @@ def clone_knowledge(source, destination):
         publication = Store(source)
         members = publication.members()  # Authenticate the pinned canonical tree.
         trees = {publication.snapshot['root']}
+        seen_witnesses = set()
         for witness in members.values():
+            # Every entry in a leaf shares the same authenticated ancestry.
+            # Hash that path once, preserving distinct paths for equal leaves.
+            key = (tuple(witness['entries']), tuple((edge['sibling'], edge['left']) for edge in witness['path']))
+            if key in seen_witnesses:
+                continue
+            seen_witnesses.add(key)
             node = identity(dict(schema=1, entries=witness['entries']))
             trees.add(node)
             for edge in witness['path']:
