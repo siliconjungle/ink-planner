@@ -221,6 +221,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--compiler',type=Path,required=True);p.add_argument('--source',type=Path,required=True)
     p.add_argument('--contract-proofs',type=Path);p.add_argument('--core',action='store_true');p.add_argument('--knowledge-root',type=Path,required=True)
+    p.add_argument('--termination-proofs',type=Path)
     p.add_argument('--snapshot',type=Path);p.add_argument('--registry',type=Path);p.add_argument('--target',default='rust');p.add_argument('-o',type=Path,required=True)
     p.add_argument('--planning-effort',choices=sorted(EFFORTS),default='balanced')
     p.add_argument('--budget',type=int);p.add_argument('--state-limit',type=int)
@@ -250,7 +251,7 @@ def main():
         directory=Path(temporary);original=directory/'original.json'
         if args.core:original.write_bytes(args.source.read_bytes())
         else:
-            result=subprocess.run([str(compiler),'emit-core',str(args.source),'-o',str(original),*(['--contract-proofs',str(args.contract_proofs)] if args.contract_proofs else [])],capture_output=True,text=True,timeout=args.check_timeout)
+            result=subprocess.run([str(compiler),'emit-core',str(args.source),'-o',str(original),*(['--contract-proofs',str(args.contract_proofs)] if args.contract_proofs else []),*(['--termination-proofs',str(args.termination_proofs)] if args.termination_proofs else [])],capture_output=True,text=True,timeout=args.check_timeout)
             if result.returncode:raise ValueError(result.stderr)
         source=json.loads(subprocess.check_output([str(compiler),'check-core',str(original)],text=True,timeout=args.check_timeout))['core_sha256']
         from ink_knowledge.usage_profiles import discover

@@ -87,6 +87,7 @@ def main():
     p.add_argument('--source', type=Path, required=True)
     p.add_argument('--core', action='store_true')
     p.add_argument('--contract-proofs', type=Path)
+    p.add_argument('--termination-proofs', type=Path)
     p.add_argument('--knowledge-root', type=Path, required=True)
     p.add_argument('--emit-target', choices=TARGETS, required=True)
     p.add_argument('-o', '--output', type=Path, required=True)
@@ -111,7 +112,7 @@ def main():
     compiler_hash = hashlib.sha256(compiler.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix='ink-implementation-selection-') as temporary:
         scratch = Path(temporary); core = scratch/'core.json'
-        source_options=([ '--core'] if a.core else [])+(['--contract-proofs',a.contract_proofs] if a.contract_proofs else [])
+        source_options=([ '--core'] if a.core else [])+(['--contract-proofs',a.contract_proofs] if a.contract_proofs else [])+(['--termination-proofs',a.termination_proofs] if a.termination_proofs else [])
         source = json.loads(invoke(compiler, ['emit-core', source_path, '-o', core,*source_options], a.check_timeout_seconds))['core_sha256']
         if a.replay:
             raw = read(a.replay, MAX_VIEW_BYTES)
