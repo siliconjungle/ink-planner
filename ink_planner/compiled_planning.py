@@ -34,7 +34,7 @@ def code_fingerprint():
     authoring=Path(ink_knowledge.__file__).parent.parent
     roots.extend((name,authoring/name)for name in ['libraries','research/general-laws','research/verified-kernel'])
     return identity({label+'/'+str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest()
-        for label,root in roots for p in sorted(root.rglob('*'))if p.suffix in {'.py','.json','.gz','.mjs','.rs','.txt','.ink'}and p.is_file()})
+        for label,root in roots for p in sorted(root.rglob('*'))if p.suffix in {'.py','.json','.gz','.mjs','.rs','.txt','.ink','.lean'}and p.is_file()})
 
 
 def fingerprint(state):
