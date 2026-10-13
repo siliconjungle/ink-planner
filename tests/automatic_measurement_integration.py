@@ -35,6 +35,18 @@ with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-'
     warm=json.loads(Path(str(plan)+'.receipt.json').read_text())
     assert warm['cache']['hit'] and json.loads(plan.read_text())==packet,warm
     if target=='javascript':
+        assert warm['diagnostics']['fresh_work']==dict(search=False,measurements=False,selected_replay_reported=True)
+        # Keep the source/key bindings but corrupt the proof-bearing packet.
+        # Cache membership must not turn malformed proof data into authority.
+        for file in (store.root/'compiled-cache').glob('*.json'):
+            cached=json.loads(file.read_text())
+            cached['package']['steps'].append(dict(kind='rewrite',package={}))
+            file.write_text(json.dumps(cached))
+        result=subprocess.run(command,env=environment,text=True,capture_output=True)
+        assert result.returncode==0,result.stderr
+        recovered=json.loads(Path(str(plan)+'.receipt.json').read_text())
+        assert any(n.get('recipe')=='compiled-cache' and n.get('status')=='declined' for n in recovered['recipes']),recovered
+        subprocess.run([str(compiler),'check-plan',str(source),str(plan),'--target',target],check=True,capture_output=True)
         cases=[]
         for xs in [[],[0,2,4294967295],[19,1,5,3,7],list(range(193))]:
             for n in [0,1,4,len(xs),len(xs)+1,4294967295]:
