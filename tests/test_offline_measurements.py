@@ -1,4 +1,4 @@
-import json,subprocess,tempfile,unittest
+import hashlib,json,subprocess,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from ink_knowledge import Store
@@ -23,11 +23,14 @@ class OfflineMeasurements(unittest.TestCase):
     def test_candidate_must_validate_in_every_fresh_process(self):
         with tempfile.TemporaryDirectory()as tmp:
             root=Path(tmp);store=Store.publish(root/'knowledge',[]);marker=root/'first-import'
+            compiler=root/'compiler';compiler.write_text('fixture')
+            from ink_planner.compiled_planning import code_fingerprint
+            fingerprint=code_fingerprint()
             meta=dict(state=None,named_types={},functions=[dict(name='run',internal=False,params=[],result={'kind':'u32'})])
             class Emitter:
-                directory=root;original=root/'source';compiler_hash='1'*64
-                options=SimpleNamespace(target='javascript',measure_processes=3,measure_timeout=30)
-                def invoke(self,command,*args):
+                directory=root;original=root/'source';compiler_hash=hashlib.sha256(compiler.read_bytes()).hexdigest();code_hash=fingerprint
+                options=SimpleNamespace(target='javascript',measure_processes=3,measure_timeout=30,check_timeout=30)
+                def invoke(self,command,*args,**kwargs):
                     if command=='run':return 1
                     artifact=args[-1]
                     source='export const metadata='+json.dumps(meta)+';'
@@ -35,6 +38,7 @@ class OfflineMeasurements(unittest.TestCase):
                         source+="import fs from 'node:fs';const seen=fs.existsSync("+json.dumps(str(marker))+");fs.writeFileSync("+json.dumps(str(marker))+",'seen');export function call(){return seen?2:1;}"
                     else:source+='export function call(){return 1;}'
                     artifact.write_text(source)
+            Emitter.compiler=compiler
             workload=root/'workload.json';workload.write_text(json.dumps(dict(schema=1,phases={'call:run':[dict(function='run',args=[])]},profile={'call:run':1},workload=dict(shape={},distribution='controls',concurrency=1,residency='captured'))))
             baseline='a'*64;candidate='b'*64
             _,_,_,receipt=acquire(Emitter(),store,[{'input_core_sha256':'c'*64}]*2,[{}]*2,[baseline,candidate],workload)

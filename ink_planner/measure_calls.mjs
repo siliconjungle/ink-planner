@@ -4,12 +4,15 @@ import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {performance} from 'node:perf_hooks';
 import {createHash} from 'node:crypto';
-const {artifacts,phases}=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const {artifacts,phases,measurement={}}=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const rounds=measurement.rounds??11,minBatch=measurement.minimum_batch_ms??5,maxCalls=measurement.maximum_calls_per_sample??1024;
+if(!Number.isInteger(rounds)||rounds<9||rounds>64||!Number.isInteger(minBatch)||minBatch<1||minBatch>50||!Number.isInteger(maxCalls)||maxCalls<1||maxCalls>65536)throw Error('bounded measurement controls required');
 const rows=[],rejected=[],lanes=[];
 let sink=0,seed=0x7193abef;
+const bits=new DataView(new ArrayBuffer(8));
 function consume(v){
  if(v===null||v===undefined)return 0;
- if(typeof v==='number')return (Math.imul(Math.trunc(v),31)^Math.trunc(v*65536))|0;
+ if(typeof v==='number'){bits.setFloat64(0,v,true);return bits.getUint32(0,true)^bits.getUint32(4,true);}
  if(typeof v==='boolean')return Number(v);
  if(typeof v==='string'){let h=0;for(let i=0;i<v.length;i++)h=Math.imul(h,31)^v.charCodeAt(i);return h;}
  let h=0;for(const x of Object.values(v))h=Math.imul(h,31)^consume(x);return h;
@@ -61,12 +64,12 @@ for(const [phase,calls] of Object.entries(phases)){
  const counts=new Map(),samples=new Map();
  for(const l of shuffle([...lanes])){
   for(let i=0;i<8;i++)invoke(l);
-  let n=1,elapsed;do{const start=performance.now();for(let i=0;i<n;i++)invoke(l);elapsed=performance.now()-start;if(elapsed>=5||n>=65536)break;n*=2;}while(true);
+  let n=1,elapsed;do{const start=performance.now();for(let i=0;i<n;i++)invoke(l);elapsed=performance.now()-start;if(elapsed>=minBatch||n>=maxCalls)break;n=Math.min(n*2,maxCalls);}while(true);
   counts.set(l.measurement,n);samples.set(l.measurement,[]);
  }
- for(let round=0;round<9;round++)for(const l of shuffle([...lanes])){
+ for(let round=0;round<rounds;round++)for(const l of shuffle([...lanes])){
   const n=counts.get(l.measurement),start=performance.now();for(let i=0;i<n;i++)invoke(l);
-  samples.get(l.measurement).push(String(Math.max(0,Math.round((performance.now()-start)*1e6/n))));
+  samples.get(l.measurement).push(String(Math.max(0,Math.round((performance.now()-start)*1e6/n/calls.length))));
  }
  for(const l of lanes)rows.push({measurement:l.measurement,phase,complete_call_ns:samples.get(l.measurement),calls_per_sample:counts.get(l.measurement),phase_calls:calls.length});
 }

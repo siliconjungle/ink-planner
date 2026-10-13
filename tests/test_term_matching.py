@@ -6,6 +6,16 @@ def term(name,*args):return dict(sort={'Value':'U32'},node={'Op':[name,list(args
 def var(name):return dict(sort={'Value':'U32'},node={'Free':name})
 
 class Matching(unittest.TestCase):
+    def test_new_instance_invalidates_cached_misses_and_preserves_existing_matches(self):
+        x=var('x');objects={}
+        matcher=Matcher(objects,[],key,children,match,substitute,100000)
+        target=term('newly-exposed',var('input'))
+        self.assertEqual(matcher.matches(target),[])
+        objects['new']=dict(params={'x':x['sort']},conditions=[],**{'from':term('newly-exposed',x),'to':x})
+        matcher.add(['new'])
+        self.assertEqual(matcher.matches(target),[('new',{'x':var('input')},var('input'))])
+        matcher.add(['new'])
+        self.assertEqual(len(matcher.matches(target)),1)
     def test_filters_and_cache_preserve_full_match_results(self):
         x=var('x');objects={}
         for i in range(30):

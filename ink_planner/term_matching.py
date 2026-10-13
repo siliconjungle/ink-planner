@@ -13,10 +13,17 @@ class Matcher:
         self.index={};self.filters={};self.cache=OrderedDict();self.bytes=0
         self.limit=max(1,memory_bytes//8)
         self.stats=dict(cache_hits=0,cache_misses=0,structural_rejections=0,match_attempts=0,evictions=0)
+        self.add(roots)
+    def add(self,roots):
+        """Newly exposed template instances invalidate negative subtree hints."""
+        added=False
         for ident in roots:
-            law=objects[ident];root=self.head(law['from'],law['params'])
+            if ident in self.filters:continue
+            law=self.objects[ident];root=self.head(law['from'],law['params'])
             self.index.setdefault(root,[]).append(ident)
             self.filters[ident]=self.signatures(law['from'],law['params'])
+            added=True
+        if added:self.cache.clear();self.bytes=0
     def head(self,t,params=()):
         n=t['node'];sort=self.key(t['sort'])
         if isinstance(n,dict):

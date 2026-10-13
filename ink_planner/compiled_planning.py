@@ -29,8 +29,12 @@ def effort_options(args):
 def code_fingerprint():
     import ink_knowledge,producers
     roots=[('knowledge',Path(ink_knowledge.__file__).parent),('producers',Path(producers.__file__).parent),('planner',Path(__file__).parent)]
+    # Installed authoring resources can change proposals without changing a
+    # Python module or database snapshot. Bind those bytes to cache/cost reuse.
+    authoring=Path(ink_knowledge.__file__).parent.parent
+    roots.extend((name,authoring/name)for name in ['libraries','research/general-laws','research/verified-kernel'])
     return identity({label+'/'+str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest()
-        for label,root in roots for p in sorted(root.rglob('*'))if p.suffix in {'.py','.json','.gz','.mjs'}and p.is_file()})
+        for label,root in roots for p in sorted(root.rglob('*'))if p.suffix in {'.py','.json','.gz','.mjs','.rs','.txt','.ink','.lean'}and p.is_file()})
 
 
 def fingerprint(state):
@@ -232,6 +236,8 @@ def main():
     p.add_argument('--minimum-measured-gain-ppm',type=int,default=100000,help='minimum observed lifecycle gain for freshly calibrated alternatives (default 10%)')
     p.add_argument('--measure-timeout',type=int,default=120)
     p.add_argument('--measure-processes',type=int,default=3,help='fresh offline timing processes, sharing the measurement time budget')
+    p.add_argument('--measurement-mode',choices=['auto','off'],default='auto',help='automatically acquire bounded pure typed probes when no workload evidence exists')
+    p.add_argument('--cache',choices=['auto','off'],default='auto',help='reuse same-epoch bounded plans with fresh proof replay')
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
     args=effort_options(p.parse_args())
     if not 1<=args.recipe_workers<=8:p.error('recipe workers must be between 1 and 8')
@@ -243,6 +249,7 @@ def main():
     if not 1<=args.measure_processes<=8:p.error('measurement processes must be between 1 and 8')
     if not 0<=args.minimum_measured_gain_ppm<1_000_000:p.error('minimum measured gain must be between 0 and 999999 ppm')
     if args.measure_holdout and not args.measure_workload:p.error('holdout requires a measurement workload')
+    if args.measure_holdout and args.target!='javascript':p.error('typed holdout requires the JavaScript measurement adapter')
     if args.measure_holdout:
         from .offline_measurements import independent_workloads
         independent_workloads(args.measure_workload,args.measure_holdout)
@@ -264,6 +271,26 @@ def main():
         args.observed_resources=dict(peak_pending=max((p['peak_pending'] for p in usage_profiles),default=0),peak_pending_bytes=max((p['peak_pending_bytes'] for p in usage_profiles),default=0)) if usage_profiles else None
         initial=dict(schema=1,semantics=SEMANTICS,input_core_sha256=source,steps=[])
         planner=Planner(compiler,original,root,directory,registry['recipes'],digest,args)
+        from . import compiled_cache
+        cache_key=compiled_cache.key(planner,source,store.snapshot_id,args,usage_profiles)
+        cached=compiled_cache.load(root,cache_key)if args.cache=='auto'and not args.measure_workload else None
+        if cached is not None:
+            try:
+                packet=cached['package']
+                if packet['input_core_sha256']!=source:raise ValueError('cached source differs')
+                replay=directory/'cached-plan.json';replay.write_bytes(canonical(packet)+b'\n')
+                planner.invoke('check-plan',original,replay,'--core','--target',args.target)
+                if code_fingerprint()!=planner.code_hash or hashlib.sha256(compiler.read_bytes()).hexdigest()!=planner.compiler_hash:raise ValueError('execution machinery changed during cached replay')
+                if args.emit:planner.invoke('emit-plan',original,replay,'--core','--target',args.target,'-o',args.emit)
+                args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(packet)+b'\n')
+                receipt=dict(cached['receipt'],cache=dict(hit=True,key=cache_key,origin_created_unix=cached['created_unix'],scope='Historical search/cost diagnostics reused; only selected full chain freshly replayed'))
+                from .planning_diagnostics import diagnose
+                receipt['diagnostics']=diagnose(receipt)
+                Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
+                print(json.dumps(dict(status='checked',cache=receipt['cache'],source=source,selected=identity(packet))))
+                planner.close();return
+            except (ValueError,KeyError,TypeError,OSError,subprocess.TimeoutExpired)as error:
+                planner.notes.append(dict(recipe='compiled-cache',status='declined',reason=str(error)[-2000:]))
         states,receipt=explore(initial,planner.expand,planner.check,planner.priority,args.budget,args.state_limit,args.time_seconds,args.memory_bytes)
         if hashlib.sha256(compiler.read_bytes()).hexdigest()!=planner.compiler_hash or code_fingerprint()!=planner.code_hash:raise ValueError('compiler or planning knowledge changed during search')
         from ink_knowledge.implementation_candidates import publish_candidates
@@ -278,19 +305,47 @@ def main():
             chosen,selection=select(store,source,eligible,usage_profiles,measurements[0],args.memory_limit)
             selected=packages[measurements.index(chosen)]
         acquisition=None
+        automatic_probe=None
+        if args.measurement_mode=='auto'and not args.measure_workload and not usage_profiles and not any(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
+            from ink_knowledge.selection_probes import create
+            try:spec,automatic_probe=create(json.loads(original.read_bytes()))
+            except (ValueError,TypeError,KeyError)as error:spec=None;automatic_probe=dict(reason='typed probes declined: '+str(error))
+            if args.target not in {'javascript','rust'}:
+                spec=None;automatic_probe['reason']='no installed offline measurement adapter for '+args.target
+            if args.memory_limit is not None or args.migration_count:
+                spec=None;automatic_probe['reason']='synthetic pure timing probes do not establish memory or migration lifecycle costs'
+            if spec is not None:
+                args.measure_workload=directory/'automatic-probes.json';args.measure_workload.write_text(json.dumps(spec,allow_nan=False))
         if args.measure_workload:
             if any(getattr(args,n)is not None for n in ['profile','workload','target_profile']) or args.migration_count:raise ValueError('offline pure-call acquisition cannot combine existing profiles or migration')
             from .offline_measurements import acquire,validated
-            target,workload,profile,acquisition=acquire(planner,store,packages,[s for _,s in states.values()],measurements,args.measure_workload)
+            from ink_knowledge.selection_probes import policy
+            from .measured_selection import shortlist
+            controls=policy() if automatic_probe is not None else None;checked_states=[s for _,s in states.values()]
+            indices=shortlist(checked_states,planner.priority,controls['candidates']) if controls else list(range(len(packages)))
+            try:
+                target,workload,profile,acquisition=acquire(planner,store,[packages[i]for i in indices],[checked_states[i]for i in indices],[measurements[i]for i in indices],args.measure_workload,controls)
+                acquisition['shortlist']=dict(measured_indices=indices,admitted=len(packages),limit=controls['candidates'] if controls else len(packages),unmeasured_reason='bounded automatic measurement candidate budget')
+            except (ValueError,OSError,subprocess.TimeoutExpired)as error:
+                if automatic_probe is None:raise
+                automatic_probe['reason']='offline probes declined: '+str(error)[-2000:]
         elif all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             profile=json.loads(args.profile.read_bytes());workload=json.loads(args.workload.read_bytes());target=json.loads(args.target_profile.read_bytes())
         if acquisition is not None or all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             if target.get('backend')!=args.target:raise ValueError('measurement backend must match emission lane')
             eligible=[m for m,(_,s)in zip(measurements,states.values())if s.get('capability',{}).get('emittable',True)]
             if acquisition is not None:eligible=validated(eligible,acquisition)
-            guard=dict(minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)if acquisition is not None else {}
+            guard=dict(minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)if acquisition is not None and automatic_probe is None else {}
             chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,
                 {m:'migrate:'+measurements[0]+':portable:'+m for m in measurements[1:]},**guard)
+            if acquisition is not None and automatic_probe is not None:
+                from .measured_selection import choose
+                setup={r['measurement']:int(r.get('setup_ns',float(r.get('module_load_ms','0'))*1000000))for r in acquisition['acquisition'].get('module_load',[])}
+                chosen,guard=choose(acquisition['acquisition'],profile,measurements[0],controls,setup)
+                if chosen not in selection['total_ns']:chosen=measurements[0]
+                selection['uncertainty_guard']=guard
+                selection['reason']=guard['reason']
+                selection['selected_measurement']=chosen
             if acquisition is not None:
                 if args.measure_holdout:
                     selected_indices=[0] if chosen==measurements[0] else [0,measurements.index(chosen)]
@@ -314,7 +369,7 @@ def main():
         args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(selected)+b'\n')
         receipt.update(dict(schema=1,semantics=SEMANTICS,status='checked',source=source,compiler_sha256=planner.compiler_hash,
             registry_sha256=digest,producer_sha256=planner.code_hash,planning_budgets=dict(effort=args.planning_effort,recipe_workers=args.recipe_workers,**{name:getattr(args,name)for name in EFFORTS['balanced']}),reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
-            selection=selection,measurement_acquisition=acquisition,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
+            selection=selection,automatic_probe=automatic_probe,measurement_acquisition=acquisition,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
         from .planning_diagnostics import diagnose
         receipt['diagnostics']=diagnose(receipt)
         Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
@@ -323,6 +378,13 @@ def main():
             command=[str(compiler),'emit-plan',str(original),str(args.o.resolve()),'--core','--target',args.target,'-o',str(args.emit)]
             result=subprocess.run(command,capture_output=True,text=True,timeout=args.check_timeout)
             if result.returncode:raise ValueError(result.stderr)
+        if args.cache=='auto':
+            compiled_cache.save(root,cache_key,selected,receipt)
+            # Ordinary publication appends source-bound candidates. The exact
+            # output snapshot is a second valid key, never an arbitrary latest.
+            args.measure_workload=None if automatic_probe is not None else args.measure_workload
+            next_key=compiled_cache.key(planner,source,Store(root).snapshot_id,args,usage_profiles)
+            compiled_cache.save(root,next_key,selected,receipt)
         print(json.dumps({k:v for k,v in receipt.items()if k not in {'edges','rejected','recipes','candidates','coverage','diagnostics'}}))
 
 if __name__=='__main__':main()

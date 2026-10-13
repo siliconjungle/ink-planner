@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix='ink-offline-selection-integration-')as 
     workload=root/'workload.json';workload.write_text(json.dumps(spec));output=root/'selected.mjs'
     command=[str(compiler),'compile',str(source),'--optimise',str(store.root),'--registry',str(reg),'--target','javascript','--search-budget','128','--state-limit','16','--planning-seconds','15','--planning-effort','quick','--recipe-workers','2','--semantic-budget','128','--semantic-seconds','10','-o',str(output)]
     env=dict(os.environ,INK_DISTRIBUTION=str(repo))
-    r=subprocess.run(command,capture_output=True,text=True,env=env);assert r.returncode==0,r.stderr
+    r=subprocess.run([*command,'--measurement-mode','off'],capture_output=True,text=True,env=env);assert r.returncode==0,r.stderr
     baseline=json.loads(Path(str(output)+'.planning.json').read_bytes());assert not baseline['steps']
     r=subprocess.run([*command,'--measure-workload',str(workload)],capture_output=True,text=True,env=env);assert r.returncode==0,r.stderr
     selected=json.loads(Path(str(output)+'.planning.json').read_bytes());assert selected['steps']

@@ -233,10 +233,42 @@ weights. It may veto the frozen choice to baseline and never chooses another
 candidate. `--measure-processes`, `--measure-timeout` and
 `--minimum-measured-gain-ppm` make the acquisition budget and margin explicit.
 Module import and validation costs are reported separately from warm calls.
-The installed acquisition adapter remains pure JavaScript only; it does not
-measure state/setup/migration or exact peak memory. General lifecycle ranking
+This explicit multi-process and typed-holdout path uses pure JavaScript calls.
+The automatic path below also supports Rust JSON calls. Neither path measures
+state or migration lifecycles or exact peak memory. General lifecycle ranking
 can still consume externally supplied observations. No runtime probes or learned
 search are introduced.
+
+## Automatic implementation choice
+
+Ordinary compiled planning refreshes installed database proposals on admitted
+intermediate syntax and tries bounded alternative support certificates. Every
+application and complete plan still passes the independent checker. Structural
+costs only order discovery; they do not establish correctness or profitability.
+
+Without supplied lifecycle evidence, JavaScript and Rust compilation can acquire
+bounded synthetic typed probes from knowledge's `automatic-selection.json`.
+Source-diverse checked candidates undergo interleaved complete-output measurements
+and independent reference/input checks. Setup enters the lifecycle estimate; a
+comparison-adjusted paired uncertainty guard requires at least 5% improvement.
+Synthetic calls do not describe actual user usage, and some input regimes can
+regress. Unsupported types, stateful lifecycles, targets, memory constraints or
+migration retain the baseline unless comparable supplied evidence supports a
+choice. `--measurement-mode off` disables synthetic acquisition;
+`--measure-workload` supplies explicit development calls. No selection packet is
+required. Pure JavaScript calls and Rust's JSON-call ABI are distinct boundaries.
+
+The bounded compiled-plan cache binds source, exact snapshot, compiler, code,
+policy, host, options and supplied evidence. Every hit freshly replays the full
+selected chain and target before emission. Historical search/measurement costs
+are marked separately in diagnostics. `--cache off` requests fresh planning.
+The distribution forwards this as `--planning-cache off`.
+
+Development checks: `tests/automatic_measurement_integration.py`,
+`tests/composed_templates_integration.py`, support-certificate/matcher/selection
+unit tests and the distribution's `automatic_compilation` cross-target suite.
+The frozen sixteen-program experiment, raw regressions and reproduction tooling
+are published in the distribution's `reports/automatic-planning-2026-10-13`.
 
 ## License
 
