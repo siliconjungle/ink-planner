@@ -20,6 +20,11 @@ workload's calls. Both are deterministic and machine independent.
 Both acquisitions check that every candidate returns the baseline's outputs
 and leaves its inputs unchanged.
 
+Work is averaged across the example calls in each phase, then multiplied by that
+phase's lifecycle frequency, matching measured selection. Adding duplicate samples
+does not change the phase's influence. Weighted totals are exact rational strings
+(for example `110` or `10/3`) so fractional means are never truncated.
+
 ## Model and gate
 
 A model is
@@ -36,9 +41,14 @@ The planner refuses a model file unless its `validation.status` is
 It uses a model only under all of these conditions:
 - `--work-model` and `--work-workload` are both given;
 - no timings or usage profiles are available;
-- the default would otherwise keep the baseline.
+- the default would otherwise keep the baseline;
+- no memory limit or nonzero migration count requires additional lifecycle evidence.
 
 Real timings always take precedence.
+Work-model selection remains opt-in. A work count alone establishes neither peak
+memory nor migration cost; constrained runs retain the baseline with an explicit
+reason. The compiled-plan cache binds the contents of both the model and workload,
+including their presence or absence.
 
 ## Validation protocol
 

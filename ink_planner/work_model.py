@@ -24,6 +24,7 @@ import math
 import re
 import shutil
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 
 from ink_knowledge import canonical, identity
@@ -44,6 +45,12 @@ def instrument(javascript):
     counted = counted.replace('const __sort = xs => Array.from(xs)',
                               'const __sort = xs => (__w+=xs.length*Math.ceil(Math.log2(xs.length+1)),Array.from(xs))')
     return 'let __w=0;export function __work(){const w=__w;__w=0;return w;}\n' + counted
+
+
+def call_weights(spec):
+    """Match timing's mean per phase before applying lifecycle frequencies."""
+    return [Fraction(spec['profile'][phase], len(rows))
+            for phase, rows in spec['phases'].items() for _ in rows]
 
 
 def target_iterations(planner, packages, measurements, calls):
@@ -77,11 +84,10 @@ def acquire(planner, packages, states, measurements, path):
     Candidates sharing a selected module share one evaluation.
     """
     spec, digest = read_workload(path)
-    calls, weights = [], []
-    for phase, rows in spec['phases'].items():
+    calls, weights = [], call_weights(spec)
+    for rows in spec['phases'].values():
         for row in rows:
             calls.append(dict(function=row['function'], args=row['args']))
-            weights.append(spec['profile'][phase])
     request = planner.directory / 'work-calls.json'
     request.write_text(json.dumps(calls, allow_nan=False))
     by_module, rows, rejected = {}, [], []
@@ -160,18 +166,21 @@ def predict(model, base, candidate):
     return math.exp(log), math.exp(log - model['z'] * model['sigma'])
 
 
-def select(model, digest, work, measurements, eligible, baseline):
+def select(model, digest, work, measurements, eligible, baseline, *, memory_limit=None, migration_count=0):
     """Choose by predicted speedup; keep the baseline unless the bound clears the margin."""
+    if memory_limit is not None or migration_count:
+        return baseline, dict(reason='work model lacks memory or migration lifecycle evidence; baseline retained',
+                              model_sha256=digest, memory_limit=memory_limit, migration_count=migration_count)
     field = 'weighted_iterations' if model.get('feature') == 'target_iterations' else 'weighted'
     rows = {r['measurement']: r for r in work['rows'] if field in r}
     if baseline not in rows:
         return baseline, dict(reason='baseline work unavailable for the model feature; baseline retained', model_sha256=digest)
-    base = int(rows[baseline][field])
+    base = Fraction(rows[baseline][field])
     ranked = []
     for index, m in enumerate(measurements):
         if m not in eligible or m not in rows or m == baseline:
             continue
-        speedup, lower = predict(model, base, int(rows[m][field]))
+        speedup, lower = predict(model, base, Fraction(rows[m][field]))
         ranked.append((speedup, lower, -len(rows[m]['steps']), -index, m))
     ranked.sort(reverse=True)
     considered = [dict(measurement=m, predicted_speedup=round(s, 4), lower_bound=round(l, 4)) for s, l, _, _, m in ranked[:16]]

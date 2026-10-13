@@ -8,6 +8,27 @@ from ink_planner.compiled_cache import key
 
 
 class AuthoringEpoch(unittest.TestCase):
+    def test_work_model_and_workload_contents_and_presence_change_cache_identity(self):
+        with tempfile.TemporaryDirectory() as directory, patch('ink_planner.offline_measurements.target_context',return_value={}):
+            root=Path(directory)
+            planner=SimpleNamespace(compiler_hash='a'*64,registry_digest='b'*64,code_hash='c'*64)
+            options=SimpleNamespace()
+            baseline=key(planner,'source','snapshot',options,[])
+            for name in ['work_model','work_workload']:
+                with self.subTest(input=name):
+                    path=root/(name+'.json');path.write_text('{"version":1}')
+                    setattr(options,name,path)
+                    original=key(planner,'source','snapshot',options,[])
+                    self.assertNotEqual(baseline,original)
+                    path.write_text('{"version":2}')
+                    self.assertNotEqual(original,key(planner,'source','snapshot',options,[]))
+                    copy=root/(name+'-copy.json');copy.write_bytes(path.read_bytes())
+                    changed=key(planner,'source','snapshot',options,[])
+                    setattr(options,name,copy)
+                    self.assertEqual(changed,key(planner,'source','snapshot',options,[]))
+                    setattr(options,name,None)
+                    self.assertEqual(baseline,key(planner,'source','snapshot',options,[]))
+
     def test_changed_installed_authoring_bytes_invalidate_cost_and_plan_reuse(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

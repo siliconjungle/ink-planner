@@ -236,7 +236,7 @@ def main():
     for name in ['profile','workload','target-profile']:p.add_argument('--'+name,type=Path)
     p.add_argument('--measure-workload',type=Path,help='acquire comparable offline observations before selection')
     p.add_argument('--measure-holdout',type=Path,help='independent inputs that may reject, but never choose, the calibrated alternative')
-    p.add_argument('--minimum-measured-gain-ppm',type=int,default=100000,help='minimum observed lifecycle gain for freshly calibrated alternatives (default 10%)')
+    p.add_argument('--minimum-measured-gain-ppm',type=int,default=100000,help='minimum observed lifecycle gain for freshly calibrated alternatives (default 10%%)')
     p.add_argument('--measure-timeout',type=int,default=120)
     p.add_argument('--measure-processes',type=int,default=3,help='fresh offline timing processes, sharing the measurement time budget')
     p.add_argument('--measurement-mode',choices=['auto','off'],default='auto',help='automatically acquire bounded pure typed probes when no workload evidence exists')
@@ -380,7 +380,8 @@ def main():
         if work_model is not None and selected is baseline and selection.get('reason','').startswith('missing comparable'):
             from .work_model import select as select_by_work
             eligible=[m for m,(_,s)in zip(measurements,states.values())if s.get('capability',{}).get('emittable',True)]
-            chosen,selection=select_by_work(work_model[0],work_model[1],work,measurements,eligible,measurements[0])
+            chosen,selection=select_by_work(work_model[0],work_model[1],work,measurements,eligible,measurements[0],
+                memory_limit=args.memory_limit,migration_count=args.migration_count)
             selected=packages[measurements.index(chosen)]
         if args.keep_candidates:
             args.keep_candidates.mkdir(parents=True,exist_ok=True)

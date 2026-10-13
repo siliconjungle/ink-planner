@@ -1,13 +1,13 @@
 """Bounded untrusted selected-plan cache. Every hit requires fresh whole replay."""
 import hashlib,json,os,tempfile,time
 from pathlib import Path
-from ink_knowledge import identity,canonical
+from ink_knowledge import identity
 
 LIMIT=16000000
 
 def key(planner,source,snapshot,options,usage_profiles):
     inputs={}
-    for name in ['profile','workload','target_profile','measure_workload','measure_holdout']:
+    for name in ['profile','workload','target_profile','measure_workload','measure_holdout','work_model','work_workload']:
         path=getattr(options,name,None)
         inputs[name]=hashlib.sha256(path.read_bytes()).hexdigest()if path else None
     # Target availability never follows from this key; fresh checker replay also
@@ -38,7 +38,9 @@ def save(root,key,package,receipt):
     # packet is replayed on a hit, never reported as newly searched/admitted.
     compact={k:v for k,v in receipt.items()if k not in ['edges','rejected','recipes','candidates']}
     value=dict(schema=1,key=key,created_unix=int(time.time()),package=package,receipt=compact)
-    raw=canonical(value)+b'\n'
+    # Receipts contain timing/model floats; only knowledge objects use the
+    # stricter integer-only canonical encoding. Cache packets are replayed.
+    raw=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()+b'\n'
     if len(raw)>LIMIT:return
     fd,tmp=tempfile.mkstemp(prefix='.ink-cache-',dir=directory)
     try:
