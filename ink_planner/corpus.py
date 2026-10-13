@@ -81,13 +81,30 @@ def candidate_references(root, receipt):
     return references
 
 
+MUTABLE_SUFFIXES = ('.sqlite', '.sqlite-wal', '.sqlite-shm', '.sqlite-journal')
+
+
+def private_copy(root, scratch):
+    """Hard-link a knowledge root for one private evaluation.
+
+    Published objects are new immutable files and pointers are replaced
+    atomically, so sharing them is safe. SQLite indexes are rewritten in place:
+    a hard-linked index would leak one evaluation's observations into the
+    shared checkout (and into every later copy), so each one is copied.
+    """
+    subprocess.run(['cp', '-al', str(root), str(scratch)], check=True)
+    for path in Path(scratch).rglob('*'):
+        if path.is_file() and (path.name.endswith(MUTABLE_SUFFIXES) or path.name == 'index-published.json'):
+            copy = path.with_name(path.name + '.private')
+            shutil.copy2(path, copy)
+            os.replace(copy, path)
+
+
 def run_program(program, manifest_dir, args, out):
     record = dict(name=program['name'], split=program['split'])
     with tempfile.TemporaryDirectory(prefix='ink-corpus-', dir=args.scratch) as temporary:
         scratch = Path(temporary) / 'knowledge'
-        # Hard links: published objects are new immutable files and pointers
-        # are replaced atomically, so the shared checkout is never rewritten.
-        subprocess.run(['cp', '-al', str(args.knowledge_root), str(scratch)], check=True)
+        private_copy(args.knowledge_root, scratch)
         plan = out / 'plans' / f"{program['name']}.json"
         plan.parent.mkdir(parents=True, exist_ok=True)
         command = [sys.executable, '-m', 'ink_planner.compiled_planning', '--compiler', str(args.compiler),
