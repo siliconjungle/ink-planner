@@ -101,21 +101,44 @@ class Planner:
     def close(self):
         if self.session is not None:
             session=self.session;self.session=None
-            session.kill();session.wait();session.stdin.close();session.stdout.close();session.stderr.close()
-    def receive(self):
-        if not select.select([self.session.stdout],[],[],self.options.check_timeout)[0]:
-            self.close();raise ValueError('plan checker process time budget')
-        line=self.session.stdout.readline(128_000_001)
-        if not line.endswith('\n')or len(line)>128_000_000:self.close();raise ValueError('plan checker response byte budget')
-        return json.loads(line)
+            session.kill();session.wait();session.stdin.close();session.stdout.close();
+            if session.stderr is not None:session.stderr.close()
+    def receive(self,deadline=None):
+        deadline=deadline or time.monotonic()+self.options.check_timeout
+        buffer=getattr(self,'response_buffer',bytearray())
+        self.response_buffer=buffer
+        while True:
+            at=buffer.find(b'\n')
+            if at>=0:
+                line=bytes(buffer[:at]);del buffer[:at+1]
+                return json.loads(line)
+            remaining=deadline-time.monotonic()
+            if remaining<=0 or not select.select([self.session.stdout],[],[],remaining)[0]:
+                self.close();raise ValueError('plan checker process time budget')
+            chunk=os.read(self.session.stdout.fileno(),65536)
+            if not chunk or len(buffer)+len(chunk)>128_000_000:
+                self.close();raise ValueError('plan checker response byte budget')
+            buffer.extend(chunk)
+    def send(self,payload,deadline):
+        fd=self.session.stdin.fileno();os.set_blocking(fd,False);offset=0
+        while offset<len(payload):
+            remaining=deadline-time.monotonic()
+            if remaining<=0 or not select.select([],[fd],[],remaining)[1]:
+                self.close();raise ValueError('plan checker process time budget')
+            try:offset+=os.write(fd,payload[offset:offset+65536])
+            except BlockingIOError:continue
+            except BrokenPipeError:
+                self.close();raise ValueError('plan checker input closed')
     def check(self,package):
         key=identity(dict(compiler=self.compiler_hash,package=package))
         if key in self.admissions:return self.admissions[key]
         if self.session is None:
-            self.session=subprocess.Popen([str(self.compiler),'plan-session',str(self.original),'--target',self.options.target],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            self.session=subprocess.Popen([str(self.compiler),'plan-session',str(self.original),'--target',self.options.target],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+            self.response_buffer=bytearray()
             if not self.receive().get('ready'):self.close();raise ValueError('plan checker not ready')
-        self.session.stdin.write(canonical(package).decode()+'\n');self.session.stdin.flush()
-        receipt=self.receive()
+        deadline=time.monotonic()+self.options.check_timeout
+        self.send(canonical(package)+b'\n',deadline)
+        receipt=self.receive(deadline)
         if receipt.get('error'):raise ValueError(receipt['error'])
         if receipt.get('status')!='checked'or receipt.get('request_sha256',receipt.get('plan_sha256'))!=identity(package):raise ValueError('plan checker binding mismatch')
         self.reused_steps+=receipt.get('reused_steps',0)
