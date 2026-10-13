@@ -24,3 +24,9 @@ authority or claim exhaustive applicability. A time-limited search can retain
 the baseline even when useful laws exist. Synthetic selection inputs also do not
 establish profitability for arbitrary user workloads. Full receipts preserve
 original rejection reasons; the command-line summary remains compact.
+
+Cached receipts label search and cost observations as historical. `fresh_work`
+distinguishes those observations from the selected packet's reported fresh proof
+replay. Omitted candidate/edge/rejection lists remain unknown, rather than being
+reported as zero newly examined alternatives. Baseline identity can be recovered
+from the ordinary empty, source-bound initial packet even in a compact receipt.

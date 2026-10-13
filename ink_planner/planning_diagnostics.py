@@ -9,6 +9,7 @@ import argparse
 from collections import Counter
 import json
 from pathlib import Path
+from ink_knowledge import identity
 
 
 def exclusion_gate(reason):
@@ -40,6 +41,12 @@ def diagnose(receipt, expected=()):
     has_shortlist = bool(acquisition.get('shortlist'))
     selected = receipt.get('selected')
     baseline = candidates[0].get('plan') if candidates else None
+    cached = (receipt.get('cache') or {}).get('hit') is True
+    # Compact cache receipts intentionally omit historical candidate packets.
+    # The ordinary initial packet still has a deterministic source-bound identity.
+    if baseline is None and receipt.get('semantics') == 'ink-compiled-plan-v1' and receipt.get('source'):
+        baseline = identity(dict(schema=1,semantics='ink-compiled-plan-v1',
+                                 input_core_sha256=receipt['source'],steps=[]))
     outcomes = []
     for index, candidate in enumerate(candidates):
         measurement = candidate.get('measurement')
@@ -95,16 +102,19 @@ def diagnose(receipt, expected=()):
     stop = receipt.get('stop_reason', 'unknown')
     return dict(schema=1, semantics='ink-planning-diagnostics-v1',
                 scope='Recorded gates only; no proof authority, no exhaustive applicability claim, no profitability claim on unseen inputs',
+                provenance='historical cached search and costs; selected replay reported separately' if cached else 'recorded planning invocation',
+                fresh_work=dict(search=not cached and 'attempts' in receipt, measurements=bool(acquisition) and not cached,
+                                selected_replay_reported=receipt.get('status')=='checked'),
                 binding={k: receipt.get(k) for k in ('source', 'compiler_sha256', 'producer_sha256', 'source_snapshot', 'selected')},
                 search=dict(stop_reason=stop, exhausted=stop not in ('fixed-point', 'unknown'),
                             attempts=receipt.get('attempts'), admitted_states=receipt.get('admitted_states'),
-                            rejected_proofs=len(receipt.get('rejected', [])),
-                            checked_edges=len(receipt.get('edges', [])),
+                            rejected_proofs=len(receipt['rejected']) if 'rejected' in receipt else None,
+                            checked_edges=len(receipt['edges']) if 'edges' in receipt else None,
                             remaining=receipt.get('remaining'), elapsed_seconds=receipt.get('elapsed_seconds'),
                             recipes=recipes),
                 delivery=dict(baseline_retained=selected == baseline if baseline is not None else None,
                               reason=selection.get('reason') or guard.get('reason'),
-                              admitted_candidates=len(candidates), gates=dict(Counter(r['gate'] for r in outcomes)),
+                              admitted_candidates=len(candidates) if 'candidates' in receipt else None, gates=dict(Counter(r['gate'] for r in outcomes)),
                               cache=receipt.get('cache'), probe=receipt.get('automatic_probe')),
                 candidates=outcomes, expected_opportunities=opportunities,
                 rejected_proofs=receipt.get('rejected', []))
