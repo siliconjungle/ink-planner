@@ -31,7 +31,7 @@ def propose(compiler,source_path,source,root,invoke,check_package,core,timeout=1
     from ink_knowledge.recipes import load
     import producers
     root=Path(root);compiler=Path(compiler).resolve();core=Path(core)
-    if not (root/'store/snapshot.json').exists():Store.publish(root,[])
+    if not Store.is_published(root):Store.publish(root,[])
     input_store=Store(root,snapshot);registry,digest=load(registry_path,input_store);source_snapshot=input_store.snapshot_id
     Store(root).refresh_index()
     code=code_fingerprint()

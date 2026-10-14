@@ -43,8 +43,17 @@ def clone_knowledge(source, destination):
     def ignore(path, names):
         return set(names) & (omitted if Path(path) == source else {'__pycache__'})
     shutil.copytree(source, destination, copy_function=private_file_copy, ignore=ignore, symlinks=True)
-    if (source / 'store/snapshot.json').exists():
-        from ink_knowledge import Store, identity
+    from ink_knowledge import Store, identity
+    from ink_knowledge.publication import capture, commit
+    from ink_knowledge.store import _publication_lock
+    selected, _ = capture(source / 'store')
+    metadata = {'names.json', 'snapshot.json', 'publication.json', 'names'}
+    def publication_ignore(path, names):
+        ignored = {name for name in names if name.startswith(('.publication.sqlite', '.ink-pointer-', '.ink-object-'))}
+        if Path(path) == source / 'store':
+            ignored |= set(names) & metadata
+        return ignored
+    if selected['snapshot'] is not None:
         publication = Store(source)
         members = publication.members()  # Authenticate the pinned canonical tree.
         trees = {publication.snapshot['root']}
@@ -66,15 +75,21 @@ def clone_knowledge(source, destination):
                 trees.add(node)
         data = destination / 'store'
         shutil.copytree(publication.data, data, copy_function=private_file_copy, symlinks=True,
-                        ignore=lambda _, names: set(names) & {'objects', 'trees', 'snapshots'})
+                        ignore=lambda path, names: publication_ignore(path, names) | (set(names) & {'objects', 'trees', 'snapshots'} if Path(path) == publication.data else set()))
         for directory, ids in [('objects', members), ('trees', trees), ('snapshots', [publication.snapshot_id])]:
             (data / directory).mkdir()
             for ident in ids:
                 os.link(publication.data / directory / (ident + '.json'), data / directory / (ident + '.json'))
-        if Store(source).snapshot_id != publication.snapshot_id:
+        # Install exactly the captured metadata, never mirrors copied mid-commit.
+        with _publication_lock(destination):
+            commit(data, publication.snapshot, publication.names)
+        if Store(source).publication_id != publication.publication_id:
             raise ValueError('knowledge publication changed during corpus isolation')
     elif (source / 'store').exists():
-        shutil.copytree(source / 'store', destination / 'store', copy_function=private_file_copy, symlinks=True)
+        shutil.copytree(source / 'store', destination / 'store', copy_function=private_file_copy,
+                        symlinks=True, ignore=publication_ignore)
+        if identity(capture(source / 'store')[0]) != identity(selected):
+            raise ValueError('knowledge publication changed during corpus isolation')
     index = source / 'index.sqlite'
     if index.exists():
         with closing(sqlite3.connect(index.as_uri() + '?mode=ro', uri=True)) as original:
@@ -181,7 +196,8 @@ def run_program(program, prepared, args, out):
         receipt_path = Path(str(plan) + '.receipt.json')
         receipt = json.loads(receipt_path.read_text())
         record['references'] = candidate_references(scratch, receipt)
-        names = json.loads((scratch / 'store' / 'names.json').read_text()) if (scratch / 'store' / 'names.json').exists() else {}
+        from ink_knowledge import Store
+        names = Store(scratch).names
         wanted = {r for ref in record['references'] for r in ref['laws'] + ref['representations']}
         wanted |= set(((receipt.get('diagnostics') or {}).get('semantic') or {}).get('laws', {}))
         record['names'] = {ident: name for name, ident in names.items() if isinstance(ident, str) and ident in wanted}

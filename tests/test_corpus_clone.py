@@ -1,4 +1,5 @@
 import os
+import json
 from contextlib import closing
 from unittest.mock import patch
 import sqlite3
@@ -27,6 +28,46 @@ class CorpusClone(unittest.TestCase):
                 self.assertEqual(copied.object(identity(value)), value)
             self.assertFalse((private / 'store/objects' / (identity(old) + '.json')).exists())
             self.assertFalse((private / 'store/snapshots' / (previous.snapshot_id + '.json')).exists())
+
+    def test_dirty_mirrors_and_coordinator_files_are_not_copied_as_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'
+            obj = entry('definition', 'clone-recovery', {'value': 9})
+            publication = Store.publish(root, [obj], {'seed': identity(obj)})
+            (root / 'store/names.json').write_text('{"dirty":"unpublished"}')
+            (root / 'store/snapshot.json').write_text('{broken')
+            for name in ['.ink-pointer-abandoned', '.ink-object-abandoned', '.publication.sqlite-stale']:
+                (root / 'store' / name).write_text('must not copy')
+            private = Path(directory) / 'private'
+            clone_knowledge(root, private)
+            copied = Store(private)
+            self.assertEqual(copied.publication_id, publication.publication_id)
+            self.assertEqual(copied.names, publication.names)
+            self.assertEqual(copied.object(identity(obj)), obj)
+            self.assertEqual(json.loads((private / 'store/names.json').read_bytes()), copied.names)
+            self.assertEqual(json.loads((private / 'store/snapshot.json').read_bytes()), copied.snapshot)
+            self.assertFalse(os.path.samefile(root / 'store/.publication.sqlite', private / 'store/.publication.sqlite'))
+            for name in ['.ink-pointer-abandoned', '.ink-object-abandoned', '.publication.sqlite-stale']:
+                self.assertFalse((private / 'store' / name).exists())
+
+    def test_names_only_change_during_clone_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'
+            obj = entry('definition', 'clone-generation', {'value': 1})
+            publication = Store.publish(root, [obj], {'seed': identity(obj)})
+            private = Path(directory) / 'private'
+            original = os.link
+            changed = []
+            def race(source, destination, **kwargs):
+                if Path(destination).parent.resolve() == (private / 'store/objects').resolve() and not changed:
+                    changed.append(True)
+                    publication.extend([], {'alias': identity(obj)})
+                return original(source, destination, **kwargs)
+            with patch('ink_planner.corpus.os.link', side_effect=race):
+                with self.assertRaisesRegex(ValueError, 'publication changed during corpus isolation'):
+                    clone_knowledge(root, private)
+            self.assertEqual(Store(root).snapshot_id, publication.snapshot_id)
+            self.assertIn('alias', Store(root).names)
 
     def test_relative_paths_copy_publication_with_or_without_an_index(self):
         for indexed in [False, True]:
