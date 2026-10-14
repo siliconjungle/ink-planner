@@ -13,7 +13,7 @@ def fit(store,rows,target_key):
     Exact joint convex support restricts prediction to observed combinations and
     their interpolations. This does not establish timing accuracy or confidence.
     """
-    if not isinstance(target_key,str)or not target_key or not isinstance(rows,list)or not rows or len(rows)>4096:raise ValueError('invalid fitting request')
+    if not isinstance(target_key,str)or not 1<=len(target_key)<=4096 or not isinstance(rows,list)or not rows or len(rows)>4096:raise ValueError('invalid fitting request')
     groups={};refs=[];cohorts={}
     for row in rows:
         id=hash_id(row['observation']);observation=read(store.data/'observations'/f'{id}.json');Store.validate_observation(observation)
@@ -43,6 +43,7 @@ def fit(store,rows,target_key):
         groups.setdefault(key,[]).append((features,statistics.median(int(n)for n in observation['metrics']['complete_call_ns'])))
         refs.append(id)
     models={}
+    if len({scope for scope,_,_ in groups})>256:raise ValueError('profile model budget')
     for(scope,boundary,backend),points in sorted(groups.items()):
         names=sorted(points[0][0])
         if any(sorted(f)!=names for f,_ in points):raise ValueError('incomparable feature schemas')
@@ -66,6 +67,7 @@ def fit(store,rows,target_key):
         model['domains']=domain;model['backends'][backend]=dict(intercept_ns=weights[0],terms=terms,
             support=derive(names,[features for features,_ in points]))
     profile=dict(schema=3,target_key=target_key,models=models)
+    if len(json.dumps(profile,separators=(',',':')).encode())>4_000_000:raise ValueError('profile byte budget')
     id=publish_model(store,profile,refs);return id,load_model(store,id)
 
 

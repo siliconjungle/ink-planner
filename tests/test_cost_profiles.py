@@ -4,6 +4,14 @@ from ink_knowledge import Store
 from ink_knowledge.cost_models import load_model
 from ink_planner.cost_profiles import fit
 class CostProfiles(unittest.TestCase):
+ def test_authoring_respects_consumer_scope_and_target_budgets(self):
+  with tempfile.TemporaryDirectory()as d:
+   st=Store.publish(d,[])
+   o=dict(schema=1,program='0'*64,entries=[],plan='1'*64,target=dict(hardware='fixture',driver='fixture',toolchain='fixture',backend='cpu',bridge='packed-v1'),workload=dict(shape={'features':{'input_elements':1}},distribution='fixture',concurrency=1,residency='captured-owned'),metrics=dict(complete_call_ns=['100'],peak_bytes=None))
+   observation=st.observe(o)
+   with self.assertRaisesRegex(ValueError,'model budget'):fit(st,[dict(scope=str(i),observation=observation)for i in range(257)],'fixture')
+   with self.assertRaisesRegex(ValueError,'invalid fitting request'):fit(st,[dict(scope='one',observation=observation)],'x'*4097)
+   self.assertFalse((st.data/'cost-models').exists())
  def test_mixed_measurement_cohorts_cannot_be_pooled_under_one_label(self):
   original=dict(schema=1,program='0'*64,entries=[],plan='1'*64,target=dict(hardware='host-a',driver='driver-a',toolchain='compiler-a',backend='cpu',bridge='packed-v1'),workload=dict(shape={'features':{'input_elements':100},'ordering':'ascending'},distribution='uniform',concurrency=1,residency='captured-owned'),metrics=dict(complete_call_ns=['1000'],peak_bytes=None))
   changes=[(('target','hardware'),'host-b'),(('target','driver'),'driver-b'),
