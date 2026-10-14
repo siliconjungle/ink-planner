@@ -24,6 +24,11 @@ inputs. This binds offline ranking to its checked inputs; consumers must still
 perform ordinary selection replay. Concurrent replacement tests exercise both
 ranked selection and the missing-observation baseline fallback.
 
+Trace and instrumentation JSON are parsed from the same bounded byte snapshots
+whose digests were authenticated, including captured-boundary receipts. Replacing
+those files after authentication cannot substitute different metadata. Malformed
+nested objects reject the observation so the selector can retain its baseline.
+
 Seven separate components are supported: `invocations`, `loop_iterations`,
 `allocation_events`, `copy_bytes`, `gpu_dispatches`, `upload_bytes`,
 `readback_bytes`. Counts are bounded integers. Required price coefficients are

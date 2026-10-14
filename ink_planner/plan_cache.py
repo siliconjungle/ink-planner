@@ -1,5 +1,5 @@
 """Bounded disk cache of untrusted search hints, always replayed by the checker."""
-import hashlib, json, os, sys, tempfile
+import hashlib, json, os, stat, sys, tempfile
 from pathlib import Path
 
 MAX_BYTES=16_000_000
@@ -41,7 +41,12 @@ def save(directory, key, raw):
     finally:
         if Path(tmp).exists():Path(tmp).unlink()
     # Cache eviction changes only future search cost, never proof authority.
-    paths=[p for p in directory.glob('*.json') if len(p.stem)==64 and all(c in '0123456789abcdef' for c in p.stem)]
-    for path in sorted(paths,key=lambda p:p.stat().st_mtime_ns,reverse=True)[256:]:
+    entries=[]
+    for path in directory.glob('*.json'):
+        if len(path.stem)!=64 or any(c not in '0123456789abcdef' for c in path.stem):continue
+        try:info=path.lstat()
+        except FileNotFoundError:continue  # Another planner may evict it first.
+        if stat.S_ISREG(info.st_mode):entries.append((info.st_mtime_ns,path.name,path))
+    for _,_,path in sorted(entries,reverse=True)[256:]:
         try:path.unlink()
         except FileNotFoundError:pass

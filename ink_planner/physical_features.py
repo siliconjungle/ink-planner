@@ -93,14 +93,24 @@ def load_observation(path, expected_bindings=None):
     bindings = data['bindings']
     if not isinstance(bindings, dict) or not set(BINDINGS).issubset(bindings) or set(bindings)-set(BINDINGS)-set(BOUNDARY_BINDINGS)-{'parser'}:
         raise ValueError('physical exact-byte bindings')
-    resolved = {}
+    # Parsed metadata must come from the same bytes whose digest was checked.
+    # Keeping paths and rereading after authentication permits concurrent edits
+    # to substitute a different trace or instrumentation receipt.
+    documents = {}
+    parsed_bindings = {'trace', 'instrumentation', 'boundary_receipt', 'boundary_instrumentation'}
     for name, record in bindings.items():
         if not isinstance(record, dict) or set(record) != {'path', 'sha256'} or not isinstance(record['path'], str) or len(record['path']) > 4096 or not _digest(record['sha256']):
             raise ValueError('physical binding format')
         bound = (path.parent / record['path']).resolve()
-        if file_hash(bound) != record['sha256']:
+        raw = read_bytes(bound) if name in parsed_bindings else None
+        digest = hashlib.sha256(raw).hexdigest() if raw is not None else file_hash(bound)
+        if digest != record['sha256']:
             raise ValueError('physical binding changed: ' + name)
-        resolved[name] = bound
+        if raw is not None:
+            document = json.loads(raw)
+            if not isinstance(document, dict):
+                raise ValueError('physical metadata object required: ' + name)
+            documents[name] = document
     for name, expected in (expected_bindings or {}).items():
         if name not in bindings or bindings[name]['sha256'] != file_hash(expected):
             raise ValueError('candidate physical binding mismatch: ' + name)
@@ -114,27 +124,28 @@ def load_observation(path, expected_bindings=None):
         raise ValueError('physical scope budget')
     # Cross-check the actual untimed replay bytes, rather than accepting a
     # sidecar's invented vector or fixture identity in isolation.
-    trace = read_json(resolved['trace'])
+    trace = documents['trace']
     if trace.get('status') != 'untimed-complete-output-replayed' or trace.get('artifact_sha256') != bindings['artifact']['sha256'] or trace.get('fixture_sha256') != bindings['fixture']['sha256'] or trace.get('instrumentation_sha256') != bindings['instrumentation']['sha256'] or trace.get('instrumented_sha256') != bindings['instrumented']['sha256'] or trace.get('runner_sha256') != bindings['runner']['sha256']:
         raise ValueError('physical replay bindings')
     rows = trace.get('rows')
-    if not isinstance(rows, list) or len(rows) > 4096:
+    if not isinstance(rows, list) or len(rows) > 4096 or any(not isinstance(row, dict) for row in rows):
         raise ValueError('physical trace budget')
     matches = [r for r in rows if r.get('id') == data['fixture_id'] and r.get('entry') == data['entry'] and r.get('boundary') == data['cohort']['boundary']]
     if len(matches) != 1 or any(matches[0].get(k) != data[k] for k in ('components', 'known', 'unknown')):
         raise ValueError('physical trace vector mismatch')
-    instrumentation = read_json(resolved['instrumentation'])
+    instrumentation = documents['instrumentation']
     if instrumentation.get('artifact_sha256') != bindings['artifact']['sha256'] or instrumentation.get('instrumented_sha256') != bindings['instrumented']['sha256'] or instrumentation.get('instrumenter_sha256') != bindings['instrumenter']['sha256']:
         raise ValueError('physical instrumenter binding')
     if 'parser' in bindings and instrumentation.get('parser_sha256') != bindings['parser']['sha256']:
         raise ValueError('physical parser binding')
     if 'boundary' in trace:
+        if not isinstance(trace['boundary'], dict): raise ValueError('physical boundary object required')
         if not set(BOUNDARY_BINDINGS).issubset(bindings): raise ValueError('physical boundary bindings missing')
         for name, key in [('boundary_runner','runner_sha256'),('boundary_extractor','extractor_sha256'),('boundary_adapter','adapter_sha256'),('boundary_instrumented','instrumented_sha256'),('boundary_instrumentation','instrumentation_sha256'),('boundary_receipt','extraction_sha256')]:
             if trace['boundary'].get(key) != bindings[name]['sha256']: raise ValueError('physical boundary binding: '+name)
-        boundary = read_json(resolved['boundary_receipt'])
+        boundary = documents['boundary_receipt']
         if boundary.get('runner_sha256') != bindings['boundary_runner']['sha256'] or boundary.get('producer_sha256') != bindings['boundary_extractor']['sha256'] or boundary.get('adapter_sha256') != bindings['boundary_adapter']['sha256']: raise ValueError('physical boundary extraction mismatch')
-        boundary_instrumentation = read_json(resolved['boundary_instrumentation'])
+        boundary_instrumentation = documents['boundary_instrumentation']
         if boundary_instrumentation.get('artifact_sha256') != bindings['boundary_adapter']['sha256'] or boundary_instrumentation.get('instrumented_sha256') != bindings['boundary_instrumented']['sha256'] or boundary_instrumentation.get('instrumenter_sha256') != bindings['instrumenter']['sha256']: raise ValueError('physical boundary instrumentation mismatch')
     return data
 
