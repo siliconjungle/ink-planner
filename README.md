@@ -330,6 +330,14 @@ of every reply byte. Independent source execution supplies expected values.
 The adapter checks exact replies and unchanged input bytes before and after
 measurement, and rejects unsupported transfer data or targets.
 
+The offline JavaScript adapter uses tagged measurement packets to preserve every
+integer bit and negative zero without colliding with application record keys.
+Checked portable/compact probes include inhabited recursive records, options,
+results, fixed numeric vectors, exact words/Int, enums and identifiers. Recursion,
+value counts and the first nested sequence expansion are bounded. Unsupported
+trusted-call types remain excluded from that lane. These are cost inputs, not
+proof assumptions or observed customer usage.
+
 JavaScript automatic probes obtain their boundary mix from knowledge's
 automatic-selection.json. This is a bounded general usage model, not observed
 customer behaviour. Discovered observed profiles retain precedence. The
