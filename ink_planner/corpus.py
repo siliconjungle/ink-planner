@@ -292,6 +292,55 @@ def markdown(report, context):
     return '\n'.join(lines)
 
 
+def execution_context(args):
+    """Bind resumable diagnostics to the exact compiler, publication and code."""
+    from ink_knowledge import Store
+    from ink_knowledge.recipes import load
+    store = Store(args.knowledge_root)
+    _, registry = load(store=store)
+    sources = hashlib.sha256()
+    for directory in ['producers', 'ink_knowledge', 'libraries']:
+        for path in sorted((args.knowledge_root / directory).rglob('*')):
+            if path.is_file() and not path.is_symlink() and path.suffix in {'.py', '.json', '.ink'} and '__pycache__' not in path.parts:
+                sources.update(str(path.relative_to(args.knowledge_root)).encode())
+                sources.update(b'\0')
+                sources.update(hashlib.sha256(path.read_bytes()).digest())
+    planner_sources = hashlib.sha256()
+    planner_root = Path(__file__).parent
+    for path in sorted(planner_root.rglob('*.py')):
+        if not path.is_symlink() and '__pycache__' not in path.parts:
+            planner_sources.update(str(path.relative_to(planner_root)).encode())
+            planner_sources.update(b'\0')
+            planner_sources.update(hashlib.sha256(path.read_bytes()).digest())
+    return dict(target=args.target, planning_effort=args.planning_effort,
+                timeout=args.timeout, planner_source_sha256=planner_sources.hexdigest(),
+                compiler_sha256=hashlib.sha256(args.compiler.read_bytes()).hexdigest(),
+                snapshot=store.snapshot_id, registry_sha256=registry,
+                producer_source_sha256=sources.hexdigest(),
+                manifest_sha256=hashlib.sha256(args.manifest.read_bytes()).hexdigest())
+
+
+def write_checkpoint(path, value):
+    """A terminated run must leave either the old or the complete new record."""
+    fd, temporary = tempfile.mkstemp(prefix='.corpus-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            json.dump(value, output, indent=2)
+            output.write('\n')
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def bind_context(path, current, resume):
+    if resume:
+        if not path.exists() or json.loads(path.read_text()) != current:
+            raise ValueError('corpus resume requires the exact original execution context')
+    else:
+        write_checkpoint(path, current)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--manifest', type=Path, required=True)
@@ -302,6 +351,7 @@ def main():
     p.add_argument('--programs', help='comma-separated subset of program names')
     p.add_argument('--timeout', type=int, default=1800)
     p.add_argument('--scratch', type=Path, help='directory for private knowledge copies (same filesystem as the root)')
+    p.add_argument('--resume', action='store_true', help='retain successful records only under the exact original execution context')
     p.add_argument('--report-only', action='store_true', help='re-aggregate existing records in the output directory')
     p.add_argument('-o', '--output', type=Path, required=True)
     args = p.parse_args()
@@ -311,10 +361,17 @@ def main():
     args.scratch = (args.scratch or out / 'scratch').resolve(); args.scratch.mkdir(parents=True, exist_ok=True)
     wanted = set(args.programs.split(',')) if args.programs else None
     records_path = out / 'records.json'
-    records = json.loads(records_path.read_text()) if records_path.exists() else []
+    context = execution_context(args)
+    context_path = out / 'context.json'
+    bind_context(context_path, context, args.resume or args.report_only)
+    records = json.loads(records_path.read_text()) if (args.resume or args.report_only) and records_path.exists() else []
     if not args.report_only:
-        done = {r['name'] for r in records}
+        done = {r['name'] for r in records if r.get('status') == 0}
         for program in manifest['programs']:
+            if args.resume and program['name'] in done:
+                continue
+            if execution_context(args) != context:
+                raise ValueError('corpus execution context changed during evaluation')
             if wanted is not None and program['name'] not in wanted:
                 continue
             records = [r for r in records if r['name'] != program['name']]
@@ -324,14 +381,10 @@ def main():
             except subprocess.TimeoutExpired:
                 record = dict(name=program['name'], split=program['split'], status='timeout')
             records.append(record)
-            records_path.write_text(json.dumps(records, indent=1) + '\n')
+            write_checkpoint(records_path, records)
             print(f"  {record.get('status')} in {record.get('seconds')}s", file=sys.stderr, flush=True)
-    sys.path.insert(0, str(args.knowledge_root))
-    from ink_knowledge import Store
-    context = dict(target=args.target, planning_effort=args.planning_effort,
-                   compiler_sha256=hashlib.sha256(args.compiler.read_bytes()).hexdigest(),
-                   snapshot=Store(args.knowledge_root).snapshot_id,
-                   manifest_sha256=hashlib.sha256(args.manifest.read_bytes()).hexdigest())
+    if execution_context(args) != context:
+        raise ValueError('corpus execution context changed during evaluation')
     report = dict(summarise(records, out), context=context)
     (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     (out / 'report.md').write_text(markdown(report, context))
