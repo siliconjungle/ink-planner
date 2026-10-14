@@ -16,12 +16,16 @@ BOUNDARY_BINDINGS = ('boundary_runner', 'boundary_extractor', 'boundary_adapter'
 MAX_COUNT = 10**15
 
 
-def read_json(path, limit=64_000_000):
+def read_bytes(path, limit=64_000_000):
     with Path(path).open('rb') as f:
         raw = f.read(limit + 1)
     if len(raw) > limit:
         raise ValueError('physical metadata byte budget')
-    return json.loads(raw)
+    return raw
+
+
+def read_json(path, limit=64_000_000):
+    return json.loads(read_bytes(path, limit))
 
 
 def file_hash(path):

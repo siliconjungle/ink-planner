@@ -16,6 +16,14 @@ is implemented. Missing observations, incomparable cohorts and unknown required
 work retain the baseline. Models cannot supply application premises or lowering
 correctness. The returned ordinary package must still be checked by its consumer.
 
+The selector captures the input core, candidate index, price model and each
+selection package before use. Every candidate replays against the same private
+core snapshot, and publication uses the captured selection bytes rather than
+rereading caller-owned files after ranking. The receipt hashes the exact captured
+inputs. This binds offline ranking to its checked inputs; consumers must still
+perform ordinary selection replay. Concurrent replacement tests exercise both
+ranked selection and the missing-observation baseline fallback.
+
 Seven separate components are supported: `invocations`, `loop_iterations`,
 `allocation_events`, `copy_bytes`, `gpu_dispatches`, `upload_bytes`,
 `readback_bytes`. Counts are bounded integers. Required price coefficients are
