@@ -12,6 +12,9 @@ class CardinalityCostTests(unittest.TestCase):
   mapped=op(ls,'method:map',xs,f);filtered=op(ls,'method:filter',mapped,f);concat=op(ls,'method:concat',filtered,ys)
   self.assertEqual(estimated_list_length(concat,16),32)
   self.assertEqual(estimated_list_length(op(ls,'method:zip',concat,one,f),16),1)
+  buffer=op(value({'Buffer':'U32'}),'call:buffer',one)
+  self.assertEqual(estimated_list_length(buffer,16),1)
+  self.assertEqual(estimated_list_length(op(ls,'method:freeze',buffer),16),1)
  def test_concat_callback_work_matches_two_ordered_folds(self):
   s=value('U32');ls=value({'List':'U32'});xs=var(ls,'xs');ys=var(ls,'ys');z=var(s,'z');g=lam(s,lam(s,binary('+',bound(s,1),bound(s,0))))
   fold=lambda a,b:op(s,'call:foldr',a,b,g)

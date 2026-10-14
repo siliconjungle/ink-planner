@@ -26,4 +26,15 @@ class CallbackWorkTests(unittest.TestCase):
   s=value('U32');x=var(s,'x');callback=lam(s,binary('*',bound(s,0),x))
   call=op(s,'apply',callback,x)
   self.assertEqual(cost(call),cost(call,{'estimate:loop_iterations':16}))
+ def test_representation_conversion_does_not_erase_repeated_work(self):
+  s=value('U32');xs=var(value({'List':'U32'}),'xs');bs=value({'Buffer':'U32'})
+  callback=lam(s,binary('+',bound(s,0),var(s,'k')))
+  mapped=op(xs['sort'],'method:map',xs,callback)
+  buffered=op(xs['sort'],'method:freeze',op(bs,'method:map',op(bs,'call:buffer',xs),callback))
+  def repeated_work(t):return cost(t,{'estimate:loop_iterations':16})-cost(t,{'estimate:loop_iterations':1})
+  self.assertEqual(repeated_work(mapped),repeated_work(buffered))
+  self.assertGreater(repeated_work(buffered),0)
+  # Database prices control participation; they never establish equality.
+  disabled={'estimate:callback_carrier:Buffer':0}
+  self.assertEqual(cost(buffered,dict(disabled,**{'estimate:loop_iterations':16})),cost(buffered,dict(disabled,**{'estimate:loop_iterations':1})))
 if __name__=='__main__':unittest.main()

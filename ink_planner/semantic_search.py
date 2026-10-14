@@ -141,7 +141,7 @@ def estimated_list_length(t, fallback):
                 return sum(estimated_list_length(a, fallback) for a in args)
             if name == 'method:zip' and len(args) >= 2:
                 return min(estimated_list_length(a, fallback) for a in args[:2])
-            if name in ('method:map', 'method:filter') and args:
+            if name in ('method:map', 'method:filter', 'call:buffer', 'method:freeze') and args:
                 return estimated_list_length(args[0], fallback)
     return fallback
 
@@ -160,13 +160,15 @@ def _cost(t,operation_costs):
     n = t['node']; costs = [_cost(x, operation_costs) for x in children(t)]
     if isinstance(n, dict) and 'Op' in n:
         name, args = n['Op']
-        # A generic list callback repeats work; scalar work outside it does not.
+        # Collection callbacks repeat work across representation alternatives.
+        # Carrier participation is a database search hypothesis: converting a
+        # list to a buffer must not make its callback appear to execute once.
         # This preset is an untrusted search hypothesis, never proof authority.
         # Inspect sorts rather than theorem IDs, backend names or callback shape.
         repetitions = (operation_costs or {}).get('estimate:loop_iterations', 1)
         if args and len(args) > 1 and isinstance(args[0].get('sort'), dict) and isinstance(args[-1].get('sort'), dict):
             first = args[0]['sort'].get('Value')
-            if isinstance(first, dict) and 'List' in first and 'Arrow' in args[-1]['sort']:
+            if isinstance(first, dict) and any(operation_costs.get('estimate:callback_carrier:'+carrier, 0) for carrier in first) and 'Arrow' in args[-1]['sort']:
                 if (operation_costs or {}).get('estimate:list_cardinality', 0):
                     repetitions = estimated_list_length(args[0], repetitions)
                 costs[-1] *= repetitions
