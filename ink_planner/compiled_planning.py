@@ -14,6 +14,9 @@ from .implementation_selection import measurement_id
 from .representation_selection import rank
 
 SEMANTICS='ink-compiled-plan-v1'
+class CheckerBudgetError(ValueError):
+    """A candidate was not checked; this is not an admission rejection."""
+
 # Explicit command-line budgets override these named, bounded offline efforts.
 EFFORTS={
     'quick':dict(budget=2048,state_limit=32,time_seconds=8,semantic_budget=2048,semantic_seconds=8,proposal_timeout=8),
@@ -52,7 +55,7 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
     started=time.monotonic();first=check(initial)
     states={fingerprint(first):(initial,first)};agenda=[];serial=0;attempts=0;edges=[];rejections=[];retained=len(canonical(initial))+len(canonical(first))
     heapq.heappush(agenda,(priority(first),serial,fingerprint(first)))
-    stopped=None
+    stopped=None;unchecked_checks=0
     while agenda:
         if time.monotonic()-started>=time_seconds:stopped='time';break
         _,_,parent=heapq.heappop(agenda);package,state=states[parent]
@@ -69,7 +72,9 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
                 attempts+=1
                 try:checked=check(candidate)
                 except (ValueError,OSError,subprocess.TimeoutExpired)as error:
-                    rejections.append(dict(parent=parent,recipe=proposal.get('recipe'),label=proposal.get('label'),reason=str(error)[-2000:]));continue
+                    limited=isinstance(error,(CheckerBudgetError,subprocess.TimeoutExpired))
+                    unchecked_checks+=int(limited)
+                    rejections.append(dict(parent=parent,recipe=proposal.get('recipe'),label=proposal.get('label'),reason=str(error)[-2000:],gate='checker-budget'if limited else'admission'));continue
                 child=fingerprint(checked)
                 edges.append(dict(source=parent,target=child,step=identity(steps),kinds=[step['kind']for step in steps],recipe=proposal.get('recipe')))
                 if child in states:continue
@@ -82,7 +87,7 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
             if hasattr(expansion,'close'):expansion.close()
         if stopped:break
     return states,dict(attempts=attempts,admitted_states=len(states),edges=edges,rejected=rejections,
-        stop_reason=stopped or'fixed-point',remaining=len(agenda),retained_bytes=retained,
+        stop_reason=stopped or('checker-time'if unchecked_checks else'fixed-point'),unchecked_checks=unchecked_checks,remaining=len(agenda),retained_bytes=retained,
         elapsed_seconds=str(time.monotonic()-started),scope='Exact typed states and checked edges; bounded compilation, no runtime optimisation probes')
 
 class Planner:
@@ -114,7 +119,7 @@ class Planner:
                 return json.loads(line)
             remaining=deadline-time.monotonic()
             if remaining<=0 or not select.select([self.session.stdout],[],[],remaining)[0]:
-                self.close();raise ValueError('plan checker process time budget')
+                self.close();raise CheckerBudgetError('plan checker process time budget')
             chunk=os.read(self.session.stdout.fileno(),65536)
             if not chunk or len(buffer)+len(chunk)>128_000_000:
                 self.close();raise ValueError('plan checker response byte budget')
@@ -124,7 +129,7 @@ class Planner:
         while offset<len(payload):
             remaining=deadline-time.monotonic()
             if remaining<=0 or not select.select([],[fd],[],remaining)[1]:
-                self.close();raise ValueError('plan checker process time budget')
+                self.close();raise CheckerBudgetError('plan checker process time budget')
             try:offset+=os.write(fd,payload[offset:offset+65536])
             except BlockingIOError:continue
             except BrokenPipeError:

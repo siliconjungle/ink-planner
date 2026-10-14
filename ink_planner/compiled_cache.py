@@ -29,10 +29,14 @@ def load(root,key):
         if path.stat().st_size>LIMIT:return None
         value=json.loads(path.read_bytes())
         if value['schema']!=1 or value['key']!=key or not 0<=time.time()-value['created_unix']<=86400:return None
+        if value['receipt'].get('unchecked_checks',0):return None
         return value
     except (OSError,ValueError,KeyError,TypeError):return None
 
 def save(root,key,package,receipt):
+    # A deadline leaves candidate applicability unknown. Do not turn a transient
+    # missed check into a cached baseline that suppresses subsequent exploration.
+    if receipt.get('unchecked_checks',0):return
     directory=Path(root)/'compiled-cache';directory.mkdir(exist_ok=True)
     # Cached alternatives remain historical diagnostics. Only the selected
     # packet is replayed on a hit, never reported as newly searched/admitted.
