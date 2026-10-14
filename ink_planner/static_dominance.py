@@ -3,14 +3,16 @@
 This is the one exception to evidence-gated selection. A checked maintained
 group fold (`ink-maintained-fold-v1`) adds a constant amount of work to each
 cell write of its table, and turns every read of its keep from a scan of all
-rows into a constant-time read. No workload makes such a plan asymptotically
-worse than the baseline, so ordinary compilation selects it when no workload
-profile, measurement or validated work model has decided. Every other step
-kind, and any plan mixing one in, remains evidence-gated.
+rows into a constant-time read. A checked word extremum view adds one ordered
+multiset update to each write, logarithmic like the ordered table write itself,
+and turns every read into a logarithmic one. No workload makes such a plan
+asymptotically worse than the baseline, so ordinary compilation selects it when
+no workload profile, measurement or validated work model has decided. Every
+other step kind, and any plan mixing one in, remains evidence-gated.
 """
 
 DOMINANT_KINDS = frozenset({'maintained'})
-REASON = 'static dominance: checked maintained group folds (constant work per write, constant-time keep reads)'
+REASON = 'static dominance: checked maintained folds (no asymptotic cost per write, keep reads without table scans)'
 
 
 def dominant(package):
