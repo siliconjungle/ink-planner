@@ -151,6 +151,10 @@ def private_copy(root, scratch):
     return clone_knowledge(root, scratch)
 
 
+def worker_environment(knowledge_root):
+    return dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path(__file__).parents[1]), str(knowledge_root)]))
+
+
 def run_program(program, manifest_dir, args, out):
     record = dict(name=program['name'], split=program['split'])
     with tempfile.TemporaryDirectory(prefix='ink-corpus-', dir=args.scratch) as temporary:
@@ -161,7 +165,7 @@ def run_program(program, manifest_dir, args, out):
         command = [sys.executable, '-m', 'ink_planner.compiled_planning', '--compiler', str(args.compiler),
                    '--source', str(manifest_dir / program['source']), '--knowledge-root', str(scratch),
                    '--target', args.target, '--planning-effort', args.planning_effort, '-o', str(plan)]
-        environment = dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path(__file__).parents[1]), str(scratch)]))
+        environment = worker_environment(scratch)
         started = time.monotonic()
         result = subprocess.run(command, capture_output=True, text=True, env=environment, timeout=args.timeout)
         record['seconds'] = round(time.monotonic() - started, 3)
@@ -297,6 +301,7 @@ def execution_context(args):
     """Bind resumable diagnostics to the exact compiler, publication and code."""
     from ink_knowledge import Store
     from ink_knowledge.recipes import load
+    from .corpus_environment import capture_environment
     store = Store(args.knowledge_root)
     _, registry = load(store=store)
     sources = hashlib.sha256()
@@ -314,7 +319,7 @@ def execution_context(args):
             planner_sources.update(b'\0')
             planner_sources.update(hashlib.sha256(path.read_bytes()).digest())
     return dict(target=args.target, planning_effort=args.planning_effort,
-                timeout=args.timeout, planner_source_sha256=planner_sources.hexdigest(),
+                environment=capture_environment(args.target, worker_environment(args.knowledge_root)), timeout=args.timeout, planner_source_sha256=planner_sources.hexdigest(),
                 compiler_sha256=hashlib.sha256(args.compiler.read_bytes()).hexdigest(),
                 snapshot=store.snapshot_id, registry_sha256=registry,
                 producer_source_sha256=sources.hexdigest(),

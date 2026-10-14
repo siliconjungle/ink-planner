@@ -358,3 +358,29 @@ compares fixed choices and migration-charged schedules, optionally enforcing
 measured memory/pause budgets. Counterfactual windows require the same logical
 prefix and at least three measurements per variant. Hindsight, choice gaps and
 execution residuals are diagnostics, never a runtime policy or proof premise.
+
+
+### Resuming corpus evaluations
+
+`python -m ink_planner.corpus` saves the compiler, catalogue, recipe, source and
+manifest identities alongside its execution environment. Resume and report-only
+operations require the same recorded context. Older reports without an environment
+record remain historical evidence; they cannot be resumed into the new format.
+
+Environment capture runs in a fresh interpreter using the same environment
+construction as corpus workers. It records Python/ABI/SQLite identity, selected
+import locations and actual files for the proof and optional discovery dependencies
+(`python-sat`, `six`, `numpy`, `hnswlib`, including the separate `pysolvers` module).
+Package version strings and RECORD entries alone are insufficient: edits to the
+installed files also change the context. JavaScript binds Node bytes/version
+response; Rust binds rustc and Cargo bytes/version responses, including rustup
+proxy responses. Host identity and a small explicit set of execution controls
+are recorded; control values are hashed, and unrelated environment variables
+are omitted. Package discovery does not import or certify optional native solvers.
+
+This records selected execution components, not a hermetic machine snapshot.
+It does not bind every system library, Cargo configuration file, hardware driver
+or arbitrary future plugin dependency, and it does not remove load, scheduling,
+random-seed or timing-budget variability. Extend the component list when adding
+execution dependencies. A missing package is recorded as missing rather than
+silently equated with an installed package; proof admission remains independent.
