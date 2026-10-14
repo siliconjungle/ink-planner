@@ -11,6 +11,8 @@ class WholeProtocolTests(unittest.TestCase):
  def test_event_storage_is_independent_and_source_generic(self):
   s=self.state();s['core']['program']['events']={'arbitrary_event':'Bool'}
   rows=list(candidates(s));event=next(r for r in rows if r['label'].endswith('event-columns'));self.assertTrue(event['step']['package']['event_columns']);self.assertNotEqual(fingerprint(s),fingerprint(dict(s,protocol=event['step']['package'])))
+  runs=next(r for r in rows if r['label'].endswith('event-runs'));self.assertTrue(runs['step']['package']['event_columns']);self.assertTrue(runs['step']['package']['event_runs']);self.assertNotEqual(fingerprint(dict(s,protocol=event['step']['package'])),fingerprint(dict(s,protocol=runs['step']['package'])))
+  s['protocol']=runs['step']['package'];plain=next(r for r in candidates(s)if r['label'].endswith('event-columns'));self.assertFalse(plain['step']['package']['event_runs'])
  def test_transactional_source_requests_are_not_overridden(self):
   s=self.state();s['core']['program']['contracts']['action_protocols']={'write':'transactional'}
   rows=list(candidates(s));self.assertEqual(len(rows),2);self.assertTrue(all(r['step']['package']['actions']==[]for r in rows))

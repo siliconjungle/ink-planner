@@ -42,7 +42,7 @@ def code_fingerprint():
 
 def protocol_identity(plan):
     if plan and plan.get('compact_commits') is None:plan={k:v for k,v in plan.items()if k!='compact_commits'}
-    if plan and set(plan)<= {'schema','semantics','input_core_sha256','actions','direct_reads','output_publication','snapshot_rows','event_columns','inline_maintenance','compact_commits','columns'} and plan.get('semantics')=='ink-state-protocol-v1' and not any(plan.get(k)for k in ['actions','direct_reads','output_publication','snapshot_rows','event_columns','inline_maintenance','compact_commits','columns']):
+    if plan and set(plan)<= {'schema','semantics','input_core_sha256','actions','direct_reads','output_publication','snapshot_rows','event_columns','event_runs','inline_maintenance','compact_commits','columns'} and plan.get('semantics')=='ink-state-protocol-v1' and not any(plan.get(k)for k in ['actions','direct_reads','output_publication','snapshot_rows','event_columns','event_runs','inline_maintenance','compact_commits','columns']):
         return None
     return plan
 
