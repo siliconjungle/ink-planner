@@ -109,6 +109,46 @@ class ModularPlanning(unittest.TestCase):
         self.assertTrue(all(set(b)=={'f0','f1'}for b in refreshed))
         self.assertTrue(any(b['f0']['node']=={'Free':'x'}for b in refreshed))
 
+    def test_prefix_delivery_composes_many_local_choices_without_flooding_consumer(self):
+        subject,catalogue,program=self.fixture(3)
+        # Each function has several profitable rewrite positions. The consumer
+        # can accept only three rows: ordinary local streaming fills that quota
+        # before reaching all three functions.
+        for name,body in subject['functions'].items():
+            for _ in range(3):body=op(body['sort'],'binary:+',body,word('U32',0))
+            subject['functions'][name]=body
+        for prefixes_only in [False,True]:
+            with self.subTest(prefixes_only=prefixes_only), tempfile.TemporaryDirectory() as tmp:
+                for cached in [False,True]:
+                    checked=[];delivered=[]
+                    def check(chain):checked.append(copy.deepcopy(chain));return True
+                    apps,r=plan(subject,catalogue,check,search,program,tmp,{},budget=128,
+                        alternatives=delivered,prefixes_only=prefixes_only)
+                    self.assertEqual(r['attempts'],len(checked))
+                    self.assertTrue(all(a in checked for a in delivered))
+                    self.assertEqual({a['function']for a in apps},set(subject['functions']))
+                    if prefixes_only:
+                        self.assertEqual(len(delivered),3)
+                        self.assertEqual(delivered[-1],apps)
+                        self.assertEqual([len({s['function']for s in a})for a in delivered],[1,2,3])
+                    elif not cached:
+                        self.assertGreater(len(delivered),3)
+                        self.assertLess(len({s['function']for a in delivered[:3]for s in a}),3)
+
+    def test_prefix_delivery_does_not_emit_rejected_cross_function_combinations(self):
+        subject,catalogue,program=self.fixture(3)
+        with tempfile.TemporaryDirectory() as tmp:
+            plan(subject,catalogue,lambda _:True,search,program,tmp,{},budget=16)
+            accepted=[];delivered=[]
+            def check(chain):
+                if len(chain)>1:return False
+                accepted.append(copy.deepcopy(chain));return True
+            apps,r=plan(subject,catalogue,check,search,program,tmp,{},budget=16,
+                alternatives=delivered,prefixes_only=True)
+            self.assertEqual(delivered,[apps]);self.assertEqual(len(apps),1)
+            self.assertGreater(r['rejected'],0)
+            self.assertTrue(all(a in accepted for a in delivered))
+
     def test_schema2_search_keeps_helper_context(self):
         subject,catalogue,program=self.fixture(2)
         x=var(value('U32'),'x')
@@ -148,6 +188,11 @@ class ModularPlanning(unittest.TestCase):
             store=Store.publish(d/'store',[obj]);store.ensure_index()
             model=dict(schema=2,target='javascript',boundary='owned',cardinality=dict(default=1,by_parameter={}),weights=dict.fromkeys(COMPONENTS,1))
             (d/'cost.json').write_text(json.dumps(model));values.write_text('[4294967295]')
+            invalid=subprocess.run([sys.executable,str(root/'planner/plan.py'),
+                '--compiler',str(compiler),'--core',str(core),'--snapshot',str(d/'store/store/snapshot.json'),
+                '-o',str(d/'invalid.json'),'--modular-prefixes-only'],capture_output=True,text=True,timeout=30)
+            self.assertNotEqual(invalid.returncode,0)
+            self.assertIn('--modular-prefixes-only requires --modular-cache',invalid.stderr)
             for iteration in range(3):
                 if iteration==2:
                     for path in (d/'cache').glob('*.json'):
@@ -157,7 +202,7 @@ class ModularPlanning(unittest.TestCase):
                             path.write_text(json.dumps(hint))
                 command=[sys.executable,str(root/'planner/plan.py'),'--compiler',str(compiler),'--core',str(core),
                     '--snapshot',str(d/'store/store/snapshot.json'),'--cost-model',str(d/'cost.json'),
-                    '--modular-cache',str(d/'cache'),'-o',str(d/'selection.json'),'--budget','16',
+                    '--modular-cache',str(d/'cache'),'--modular-prefixes-only','-o',str(d/'selection.json'),'--budget','16',
                     '--alternatives',str(d/'alternatives.jsonl'),'--stream-alternatives',
                     '--search-strategy','stochastic','--search-restarts','2','--search-seed','17',
                     '--search-trace',str(d/'trace.json')]
@@ -177,7 +222,7 @@ class ModularPlanning(unittest.TestCase):
                     self.assertTrue(receipt['modular']['replanned'])
                 package=json.loads((d/'selection.json').read_text());self.assertEqual(len(package['applications']),2)
                 alternatives=(d/'alternatives.jsonl').read_text().splitlines()
-                self.assertGreaterEqual(len(alternatives),2)
+                self.assertEqual(len(alternatives),2)
                 for row in alternatives:
                     path=d/'alternative.json';path.write_text(row)
                     checked=subprocess.run([str(compiler),'check-selection',str(core),str(path)],capture_output=True,text=True)

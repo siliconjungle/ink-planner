@@ -766,7 +766,9 @@ def main():
     a.add_argument('--egraph',action='store_true',help='also run equality saturation and keep its checked chain when cheaper')
     a.add_argument('--egraph-nodes',type=int,default=4000)
     a.add_argument('--modular-cache',type=Path,help='plan each function separately, reusing cached per-function chains as hints')
+    a.add_argument('--modular-prefixes-only',action='store_true',help='stream only the checked selected prefix after each function; requires --modular-cache')
     args = a.parse_args()
+    if args.modular_prefixes_only and not args.modular_cache:a.error('--modular-prefixes-only requires --modular-cache')
     def write_diagnostics(value):
         if args.diagnostics:
             args.diagnostics.parent.mkdir(parents=True,exist_ok=True)
@@ -966,7 +968,7 @@ def main():
                         neighbourhood=neighbourhood,engine_strategy=engine,**options)
                 applications, receipt = modular_plan(subject, catalogue, check, modular_search, core_program, args.modular_cache, context,
                     budget=budget, time_seconds=time_seconds, operation_costs=operation_costs, rounds=args.rounds,
-                    core_program=core_program, width=args.width, memory_bytes=args.memory_bytes, strategy=args.strategy,
+                    prefixes_only=args.modular_prefixes_only, core_program=core_program, width=args.width, memory_bytes=args.memory_bytes, strategy=args.strategy,
                     near_misses=near_misses, reason=lambda:checker.last_error, refresh=refresh, alternatives=alternatives)
                 from ink_planner.semantic_search import cost as structural
                 def module_score(bodies):

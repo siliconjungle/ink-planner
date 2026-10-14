@@ -512,3 +512,12 @@ optional neighbour hints and scorer settings. Its trace records each local
 proposal digest together with the accepted-prefix digest. Every combined chain
 still replays against the original module. Neighbour queries change ordering
 only; rejected hints cannot suppress the remaining exact candidates.
+
+The default knowledge recipe registry offers modular composition alongside global
+semantic search. Its `--modular-prefixes-only` delivery emits at most one checked
+combined prefix per improved function, after that function's local search ends.
+This lets consumers with small proposal limits see improvements across functions
+without first consuming every local alternative. Ordinary modular CLI streaming
+still delivers all admitted alternatives unless this flag is set. Both modes
+share the same checker budget and deadline. The selected prefixes are search
+hypotheses; measured whole-workload selection remains a separate gate.

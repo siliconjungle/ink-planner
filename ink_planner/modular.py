@@ -98,6 +98,7 @@ def plan(subject, catalogue, check, search, program, cache_dir, context, **optio
     rounds = 0
     rows, combined, check_rows = [], [], []
     alternatives = options.pop('alternatives', None)
+    prefixes_only = options.pop('prefixes_only', False)
     refresh = options.pop('refresh', None)
     bodies = dict(subject['functions'])
 
@@ -129,7 +130,7 @@ def plan(subject, catalogue, check, search, program, cache_dir, context, **optio
             if not cached or checked(combined + cached):
                 applications = cached
                 row['cache'] = 'hit'
-                if cached and alternatives is not None:
+                if cached and alternatives is not None and not prefixes_only:
                     alternatives.append(combined + cached)
             elif available():
                 row['cache_rejected'] = True
@@ -150,7 +151,7 @@ def plan(subject, catalogue, check, search, program, cache_dir, context, **optio
                 call_options = dict(options, context_bodies=dict(bodies))
                 if refresh is not None:
                     call_options['refresh'] = lambda local: refresh(dict(bodies, **local))
-                if alternatives is not None:
+                if alternatives is not None and not prefixes_only:
                     call_options['alternatives'] = Alternatives()
                 # Search checks local candidates against all previously accepted
                 # functions. No post-hoc concatenation can introduce an unchecked
@@ -180,6 +181,11 @@ def plan(subject, catalogue, check, search, program, cache_dir, context, **optio
         row.update(steps=len(applications), attempts=attempts-started_attempts)
         rows.append(row)
         combined += applications
+        # A bounded consumer should see completed combinations, rather than
+        # spend its entire proposal quota on variants of the first function.
+        # Search and cache replay already checked each complete prefix.
+        if prefixes_only and applications and alternatives is not None:
+            alternatives.append(list(combined))
         # Keep refresh discovery on the exact admitted intermediate syntax.
         from .semantic_search import replace, substitute
         for step in applications:
@@ -189,7 +195,7 @@ def plan(subject, catalogue, check, search, program, cache_dir, context, **optio
     receipt = dict(attempts=attempts, rejected=rejected, generated_proposals=generated,
                    exhausted=attempts >= total_budget, check_rows=check_rows, estimate='structural; not measured runtime',
                    memo=dict(rounds=rounds, timed_out=timed_out or search_timed_out, memory_exhausted=memory_exhausted),
-                   modular=dict(functions=rows, hits=sum(r['cache']=='hit' for r in rows),
+                   modular=dict(prefixes_only=prefixes_only, functions=rows, hits=sum(r['cache']=='hit' for r in rows),
                                 misses=sum(r['cache']=='miss' for r in rows),
                                 replanned=any(r['cache_rejected'] for r in rows),
                                 scope='Every cache replay and search extension checks the complete accepted prefix; one global check budget and deadline'))
