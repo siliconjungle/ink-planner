@@ -335,3 +335,55 @@ class CompositionBudget(unittest.TestCase):
         self.assertEqual(receipt['stop_reason'],'fixed-point')
         for bad in [-1,True,1.5,1_000_001]:
             with self.assertRaises(ValueError):explore(dict(steps=[]),expand,check,lambda _:0,expansion_limit=bad)
+
+class MemoryFrontier(unittest.TestCase):
+    def test_oversized_chain_does_not_hide_shorter_chain_to_same_state(self):
+        from ink_knowledge import canonical
+        initial=dict(steps=[])
+        step=lambda padding:dict(kind='rewrite',package=dict(padding=padding))
+        small=dict(steps=[step('')]);large=dict(steps=[step('x'*4096)])
+        def check(packet):return dict(source='alternative'if packet['steps']else'baseline')
+        size=lambda p:len(canonical(p))+len(canonical(check(p)))
+        cap=size(initial)+size(small)
+        def expand(state,_):
+            if state['source']=='baseline':
+                for p in [large,small]:yield dict(status='proposal',steps=p['steps'])
+        states,receipt=explore(initial,expand,check,lambda _:0,memory_bytes=cap)
+        self.assertEqual(len(states),2)
+        self.assertTrue(any(p==small for p,_ in states.values()))
+        self.assertEqual(receipt['retained_bytes'],cap)
+        self.assertEqual(receipt['memory_deferred'],1)
+        self.assertEqual(receipt['stop_reason'],'memory')
+        self.assertFalse(receipt['rejected'])
+
+    def test_large_candidates_do_not_starve_queued_states(self):
+        initial=dict(steps=[])
+        def check(packet):
+            last=packet['steps'][-1]['package']if packet['steps']else{}
+            return dict(source=last.get('to','baseline'))
+        def expand(state,_):
+            if state['source']=='baseline':
+                for name,padding in [('branch',''),('oversized','x'*10000)]:
+                    yield dict(status='proposal',step=dict(kind='rewrite',package=dict(to=name,padding=padding)))
+            elif state['source']=='branch':
+                yield dict(status='proposal',step=dict(kind='rewrite',package=dict(to='leaf')))
+        states,receipt=explore(initial,expand,check,lambda _:0,memory_bytes=2000)
+        self.assertEqual({s['source']for _,s in states.values()},{'baseline','branch','leaf'})
+        self.assertEqual(receipt['memory_deferred'],1)
+        self.assertLessEqual(receipt['retained_bytes'],2000)
+
+    def test_deferred_stream_still_obeys_attempt_budget_and_closes(self):
+        closed=[]
+        def expand(*_):
+            try:
+                while True:
+                    yield dict(status='proposal',step=dict(kind='rewrite',package=dict(padding='x'*10000)))
+            finally:closed.append(True)
+        states,receipt=explore(dict(steps=[]),expand,
+            lambda p:dict(source='other'if p['steps']else'baseline'),lambda _:0,
+            budget=3,memory_bytes=100)
+        self.assertEqual(len(states),1)
+        self.assertEqual(receipt['attempts'],3)
+        self.assertEqual(receipt['memory_deferred'],3)
+        self.assertEqual(receipt['stop_reason'],'proof-attempts')
+        self.assertEqual(closed,[True])

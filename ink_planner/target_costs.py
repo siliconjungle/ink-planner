@@ -296,6 +296,23 @@ class _Estimator:
         value.length = None  # Do not pretend its output has the input extent.
         return value, self.loop(counts, unknown, remaining, stage=False)
 
+    @staticmethod
+    def join(sort, left, right):
+        """Join value descriptions; evaluating either arm still has its cost."""
+        lengths = [left.length, right.length]
+        literal = None
+        # Exact literal payloads can agree even when control flow is unknown.
+        # Keep Bool distinct from integer 0/1, and preserve raw integer payloads
+        # rather than comparing floating values or captured closures.
+        if (left.sort == right.sort == sort and
+                type(left.literal) in (bool, int) and
+                type(right.literal) is type(left.literal) and
+                left.literal == right.literal):
+            literal = left.literal
+        return Value(sort, max(lengths) if all(n is not None for n in lengths) else None,
+                     left.exact and right.exact and left.length == right.length,
+                     literal=literal, fresh=left.fresh and right.fresh)
+
     def eval(self, term, env, bound, active, depth):
         self.nodes += 1
         sort = term['sort']
@@ -352,9 +369,7 @@ class _Estimator:
                 left, b = self.eval(terms[1], env, bound, active, depth + 1)
                 right, c = self.eval(terms[2], env, bound, active, depth + 1)
                 a = combine(a, {k: max(b[k], c[k]) for k in COMPONENTS})
-                lengths = [left.length, right.length]
-                v = Value(sort, max(lengths) if all(n is not None for n in lengths) else None,
-                          left.exact and right.exact and left.length == right.length, fresh=left.fresh and right.fresh)
+                v = self.join(sort, left, right)
                 if left.closure is not None or right.closure is not None:
                     self.unknowns.add('branch-selected callback closure unresolved')
                 self.assumptions.add('Unknown branches use componentwise maximum; no branch frequency or independence assumed')

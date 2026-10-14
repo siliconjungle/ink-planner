@@ -133,7 +133,7 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
     started=time.monotonic();first=check(initial)
     states={fingerprint(first):(initial,first)};agenda=[];serial=0;attempts=0;edges=[];rejections=[];retained=len(canonical(initial))+len(canonical(first))
     heapq.heappush(agenda,(priority(first),serial,fingerprint(first)))
-    stopped=None;unchecked_checks=0
+    stopped=None;unchecked_checks=0;memory_deferred=0
     while agenda:
         if time.monotonic()-started>=time_seconds:stopped='time';break
         _,_,parent=heapq.heappop(agenda);package,state=states[parent]
@@ -160,15 +160,21 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
                 edges.append(dict(source=parent,target=child,step=identity(steps),kinds=[step['kind']for step in steps],recipe=proposal.get('recipe')))
                 if child in states:continue
                 size=len(canonical(candidate))+len(canonical(checked))
-                if len(states)>=state_limit or retained+size>memory_bytes:
-                    stopped='states'if len(states)>=state_limit else'memory';break
+                if len(states)>=state_limit:
+                    stopped='states';break
+                if retained+size>memory_bytes:
+                    # A large valid chain does not exhaust capacity for every
+                    # other candidate. Do not visit its target: a shorter chain
+                    # to the same checked state may still fit later.
+                    memory_deferred+=1
+                    continue
                 retained+=size;states[child]=(candidate,checked);serial+=1
                 heapq.heappush(agenda,(priority(checked),serial,child))
         finally:
             if hasattr(expansion,'close'):expansion.close()
         if stopped:break
     return states,dict(attempts=attempts,admitted_states=len(states),edges=edges,rejected=rejections,
-        stop_reason=stopped or('checker-time'if unchecked_checks else'expansion-budget'if truncated else'fixed-point'),unchecked_checks=unchecked_checks,remaining=len(agenda),retained_bytes=retained,
+        stop_reason=stopped or('memory'if memory_deferred else'checker-time'if unchecked_checks else'expansion-budget'if truncated else'fixed-point'),unchecked_checks=unchecked_checks,memory_deferred=memory_deferred,remaining=len(agenda),retained_bytes=retained,
         expanded_states=expanded,expansion_limit=expansion_limit,truncated_expansions=truncated,
         elapsed_seconds=str(time.monotonic()-started),scope='Exact typed states and checked edges; bounded compilation, no runtime optimisation probes')
 
