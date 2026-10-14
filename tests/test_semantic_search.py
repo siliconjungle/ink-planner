@@ -51,7 +51,9 @@ class SearchProofAlternatives(unittest.TestCase):
         pattern = {'sort': x['sort'], 'node': {'Op': ['call:example', [variable('arg')]]}}
         base = {'params': {'arg': x['sort']}, 'from': pattern, 'to': variable('arg'), 'conditions': []}
         rejected, valid = dict(base), dict(base)
-        rejected['conditions'] = [{'from': variable('arg'), 'to': variable('arg')}]
+        # Keep both proofs in the same premise class: the first rejection must
+        # not deduplicate the still-valid alternative for the same result.
+        rejected['conditions'] = valid['conditions'] = [{'from': variable('arg'), 'to': variable('arg')}]
         attempts = []
         def checker(applications):
             attempts.append(applications[-1]['law'])
