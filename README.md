@@ -368,6 +368,19 @@ later groups. Process and overall deadlines remain in force. This lets an
 expensive proof author run before quick families consume the parent's budget.
 Priority grants neither proof admission nor profitability and cannot force
 selection. The installed maintained-fold recipe currently has priority -10.
+Within each priority group, recipes with fewer actual dispatches start first.
+Bounded expansion reserves a first response from each eligible family before
+releasing additional proposals from a fast family. Pending raw proposals use a
+bounded byte buffer; overflow is reported as incomplete search. Global deadlines
+and proof/state limits can still prevent a family from returning. Exhaustive
+parent enumeration retains immediate stream order.
+
+Semantic search also divides its checker allowance across the remaining search
+waves once a wave admits progress, so a rejected tail cannot consume every check
+before children are composed. The allowance accounts for the remaining round
+limit; memo search keeps unprocessed alternatives. Neither ordering policy names
+an algorithm or changes the proof checker.
+
 The limit is search scheduling only. Every edge still replays its whole chain;
 truncated parents appear in `truncated_expansions`, and a truncated frontier is
 reported as `expansion-budget`, never a fixed point. The bound closes each

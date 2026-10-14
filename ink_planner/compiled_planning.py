@@ -272,10 +272,27 @@ class Planner:
         from .recipe_streams import run
         stream=run(jobs,getattr(self.options,'recipe_workers',2),self.deadline,self.options.proposal_timeout,
             min(128_000_000,getattr(self.options,'memory_bytes',512_000_000)),dispatch_counts=self.recipe_dispatches)
+        # Preserve discovery opportunities on this exact source. Otherwise a
+        # fast stream can fill the parent allowance before another recipe has
+        # its first result, and child rewrites may erase that recipe's match.
+        # Buffer bytes, not parsed proof trees; all released proposals still
+        # pass the ordinary complete-chain checker in explore().
+        from collections import deque
+        waiting=deque();ready=set();waiting_bytes=0;buffered=0;dropped=0
+        first_responses=bool(getattr(self.options,'expansion_limit',32))
+        waiting_limit=min(16_000_000,getattr(self.options,'memory_bytes',512_000_000)//8)
+        def proposal(raw,name):
+            row=json.loads(raw)
+            if row['status']=='plan':row=dict(status='proposal',label=row['label'],steps=row['package']['steps'])
+            return dict(row,recipe=name)
         try:
             for job,event in stream:
+                while waiting and len(ready)==len(jobs):
+                    name,raw=waiting.popleft();waiting_bytes-=len(raw)
+                    yield proposal(raw,name)
                 recipe=job['recipe'];name=recipe['id'];key=job['key']
                 if event['kind']=='done':
+                    ready.add(name)
                     complete.add(name)
                     if event['cached']:self.recipe_cache_hits+=1
                     if event['complete']and key in headers and key not in invalid:
@@ -291,7 +308,7 @@ class Planner:
                         if row!={'recipe':name,'registry_sha256':self.registry_digest}:raise ValueError('recipe header/registry changed')
                         headers.add(key);continue
                     status=row['status'];counts.setdefault(key,{})[status]=counts.get(key,{}).get(status,0)+1
-                    if status=='declined':self.notes.append(dict(source=state['source'],recipe=name,**row));continue
+                    if status=='declined':ready.add(name);self.notes.append(dict(source=state['source'],recipe=name,**row));continue
                     if status=='diagnostic':
                         # Untrusted search observations for planning diagnostics only.
                         self.notes.append(dict(source=state['source'],recipe=name,status='diagnostic',label=row.get('label'),diagnostics=row.get('diagnostics')));continue
@@ -299,6 +316,7 @@ class Planner:
                         before=self.directory/'migration-from.json';after=self.directory/'migration-to.json';bridge=self.directory/'migration.json';source=self.directory/'migration-core.json'
                         before.write_bytes(canonical(row['source'])+b'\n');after.write_bytes(canonical(row['target'])+b'\n');bridge.write_bytes(canonical(row['bridge'])+b'\n');source.write_bytes(canonical(state['core'])+b'\n')
                         receipt=self.invoke('check-migration',source,before,after,bridge,'--core')
+                        ready.add(name)
                         self.notes.append(dict(source=state['source'],recipe=name,status='checked-migration',receipt=receipt));continue
                     if status=='plan':row=dict(status='proposal',label=row['label'],steps=row['package']['steps'])
                     elif status!='proposal':raise ValueError('unhandled recipe result '+status)
@@ -306,11 +324,25 @@ class Planner:
                     if proposal_bytes+size>getattr(self.options,'memory_bytes',512_000_000):
                         self.notes.append(dict(source=state['source'],recipe=name,status='deferred',reason='proposal byte budget'));continue
                     proposal_bytes+=size
+                    previously_ready=name in ready;ready.add(name)
+                    if first_responses and previously_ready and len(ready)<len(jobs):
+                        if waiting_bytes+size<=waiting_limit:
+                            waiting.append((name,event['raw']));waiting_bytes+=size;buffered+=1
+                        else:dropped+=1
+                        continue
                     yield dict(row,recipe=name)
                 except (ValueError,KeyError,TypeError,OSError,subprocess.TimeoutExpired)as error:
+                    ready.add(name)
                     invalid.add(key);self.notes.append(dict(source=state['source'],recipe=name,status='declined',reason=str(error)[-2000:]))
+            while waiting:
+                name,raw=waiting.popleft();waiting_bytes-=len(raw)
+                yield proposal(raw,name)
         finally:
             stream.close()
+            self.notes.append(dict(source=state['source'],recipe='discovery-scheduling',status='diagnostic',
+                diagnostics=dict(first_response_reservation=first_responses,ready_families=len(ready),eligible_families=len(jobs),
+                    buffered_proposals=buffered,dropped_proposals=dropped,buffer_byte_limit=waiting_limit,
+                    scope='Bounded proposal ordering only; full-chain admission and global resource limits unchanged')))
             # A state/proof limit closes this generator before code following
             # finally can run. Retain the omitted-family diagnostics on that
             # path too; absence must never look like completed discovery.
@@ -319,6 +351,7 @@ class Planner:
                 if job['recipe']['id']not in complete:
                     unfinished=True
                     self.notes.append(dict(source=state['source'],recipe=job['recipe']['id'],status='deferred',reason='expansion closed before recipe completion'))
+        if dropped:yield dict(status='search-limit',reason='proposal-buffer')
         if unfinished:yield dict(status='search-limit',reason='time')
     def priority(self,state):
         # The structural hypothesis orders exploration only. It cannot select a

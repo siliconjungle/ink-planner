@@ -467,11 +467,19 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
             pending = neighbourhood.order(pending, hinted, round_index)
         pending = interleave_premise_classes(pending)
         candidates = []
+        round_checks = checked
+        remaining_waves = max(1, rounds-iteration+1) if rounds is not None else max(1, width)
+        wave_budget = max(width, (budget-checked+remaining_waves-1)//remaining_waves)
         processed=0
         for processed, (score, updated, proposal, fingerprint, law, args) in enumerate(pending,1):
             if fingerprint in seen:
                 if near_misses is not None:near_misses.duplicate(proposal[-1]['law'], law)
                 continue
+            # Once this wave has made progress, reserve checker work for
+            # composing those admitted states. A long tail of rejected matches
+            # must not consume the entire budget before any child is explored.
+            # Memo mode retains the remaining proposals for subsequent waves.
+            if candidates and checked-round_checks>=wave_budget:processed-=1;break
             if time.monotonic()-started>=time_seconds:timed_out=True;processed-=1;break
             if checked >= budget: exhausted = True; processed-=1; break
             checked += 1

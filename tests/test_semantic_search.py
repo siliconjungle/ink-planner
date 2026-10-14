@@ -8,6 +8,24 @@ def variable(name):
 
 
 class SearchProofAlternatives(unittest.TestCase):
+    def test_rejected_tail_reserves_checks_for_composing_admitted_children(self):
+        x=variable('x');source=dict(sort=x['sort'],node={'Op':['call:work',[x]]})
+        base=dict(params={'x':x['sort']},conditions=[],**{'from':source,'to':x})
+        objects={'valid':base}
+        for i in range(40):
+            objects['conditional-'+str(i)]=dict(base,conditions=[{'from':x,'to':x}],
+                to=dict(sort=x['sort'],node={'Word':0}))
+        calls=[]
+        def check(proof):
+            calls.append(proof[-1]['law'])
+            return all(step['law']=='valid'for step in proof)
+        applications,receipt=search({'functions':{f'f{i}':source for i in range(4)}},
+            {'roots':list(objects),'objects':objects},check,budget=64,width=16,rounds=6)
+        self.assertEqual(len(applications),4)
+        self.assertEqual({a['function']for a in applications},{f'f{i}'for i in range(4)})
+        self.assertLessEqual(receipt['attempts'],64)
+        self.assertTrue(any(name.startswith('conditional-')for name in calls))
+
     def test_cost_defaults_are_read_once_per_search_and_refreshed_between_searches(self):
         from ink_knowledge.cost_models import structural_prices
         x=variable('x');source={'sort':x['sort'],'node':{'Op':['call:example',[x]]}}

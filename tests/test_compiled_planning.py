@@ -31,6 +31,43 @@ class WorkloadPriorities(unittest.TestCase):
         self.assertEqual(structural_priority(fixture('U32'),{'call:main':1},prices),1)
 
 class ExpansionDiagnostics(unittest.TestCase):
+    def test_first_responses_precede_a_fast_familys_remaining_proposals(self):
+        import tempfile,time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from ink_knowledge import canonical
+        from ink_planner.compiled_planning import Planner
+        for limit,memory,expected,buffered,dropped in [
+            (2,1000000,['fast-first','slow-first','fast-second'],1,0),
+            (0,1000000,['fast-first','fast-second','slow-first'],0,0),
+            (2,512,['fast-first','slow-first'],0,1)]:
+            with self.subTest(limit=limit,memory=memory),tempfile.TemporaryDirectory()as temporary:
+                root=Path(temporary);planner=Planner.__new__(Planner)
+                planner.directory=planner.root=root;planner.compiler=root/'compiler'
+                planner.compiler_hash='compiler';planner.code_hash='code';planner.snapshot='snapshot'
+                planner.registry_digest='registry';planner.deadline=time.monotonic()+5
+                planner.options=SimpleNamespace(target='rust',registry=None,check_timeout=1,proposal_timeout=1,semantic_budget=1,semantic_rounds=1,candidate_limit=4,memory_bytes=memory,expansion_limit=limit)
+                planner.recipes=[dict(id=name,inputs=['core'])for name in ['fast','slow']]
+                planner.notes=[];planner.recipe_cache_hits=0;planner.recipe_dispatches={};planner.model=lambda _:None
+                def stream(jobs,*args,**kwargs):
+                    def line(row):return dict(kind='line',raw=canonical(row))
+                    def proposed(label):return line(dict(status='proposal',label=label,step=dict(kind='physical',package={})))
+                    yield jobs[0],line(dict(recipe='fast',registry_sha256='registry'))
+                    yield jobs[0],proposed('fast-first')
+                    yield jobs[0],proposed('fast-second')
+                    yield jobs[1],line(dict(recipe='slow',registry_sha256='registry'))
+                    yield jobs[1],proposed('slow-first')
+                    for job in jobs:yield job,dict(kind='done',complete=True,cached=True,reason=None,elapsed_seconds='0')
+                state=dict(source='source',core=dict(program={}))
+                with patch('ink_planner.recipe_streams.run',stream):
+                    rows=list(planner.expand(state,{}))
+                self.assertEqual([r['label']for r in rows if r['status']=='proposal'],expected)
+                self.assertEqual(any(r.get('reason')=='proposal-buffer'for r in rows),bool(dropped))
+                note=next(n['diagnostics']for n in planner.notes if n['recipe']=='discovery-scheduling')
+                self.assertEqual(note['buffered_proposals'],buffered)
+                self.assertEqual(note['dropped_proposals'],dropped)
+                self.assertEqual(note['ready_families'],2)
     def test_state_limit_close_records_unfinished_recipe_families(self):
         import tempfile,time
         from pathlib import Path
