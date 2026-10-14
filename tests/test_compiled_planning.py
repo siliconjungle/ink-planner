@@ -53,6 +53,34 @@ class RecursivePlans(unittest.TestCase):
             self.assertEqual(len(states),1)
             self.assertNotEqual(receipt['stop_reason'],'fixed-point')
 
+    def test_checker_deadline_keeps_searching_and_reports_unchecked_edge(self):
+        from ink_planner.compiled_planning import CheckerBudgetError
+        def check(p):
+            if p['steps'] and p['steps'][-1]['package']['slow']:
+                raise CheckerBudgetError('plan checker process time budget')
+            return dict(source='alternative'if p['steps']else'baseline')
+        def expand(state,_):
+            if state['source']=='baseline':
+                for slow in [True,False]:
+                    yield dict(status='proposal',step=dict(kind='rewrite',package=dict(slow=slow)))
+        states,receipt=explore(dict(steps=[]),expand,check,lambda _:0)
+        self.assertEqual(len(states),2)
+        self.assertEqual(receipt['stop_reason'],'checker-time')
+        self.assertEqual(receipt['unchecked_checks'],1)
+        self.assertEqual(receipt['rejected'][0]['gate'],'checker-budget')
+
+    def test_subprocess_deadline_does_not_claim_fixed_point(self):
+        import subprocess
+        def check(p):
+            if p['steps']:raise subprocess.TimeoutExpired('checker',1)
+            return dict(source='baseline')
+        def expand(state,_):
+            yield dict(status='proposal',step=dict(kind='rewrite',package={}))
+        states,receipt=explore(dict(steps=[]),expand,check,lambda _:0)
+        self.assertEqual(len(states),1)
+        self.assertEqual(receipt['stop_reason'],'checker-time')
+        self.assertEqual(receipt['unchecked_checks'],1)
+
 if __name__=='__main__':unittest.main()
 
 class EffortAndCleanup(unittest.TestCase):

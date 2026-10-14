@@ -8,6 +8,20 @@ from ink_planner.compiled_cache import key
 
 
 class AuthoringEpoch(unittest.TestCase):
+    def test_unchecked_candidates_do_not_persist_a_selected_baseline(self):
+        from ink_planner.compiled_cache import save,load
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);ident='a'*64
+            save(root,ident,dict(steps=[]),dict(unchecked_checks=1))
+            self.assertIsNone(load(root,ident))
+            save(root,ident,dict(steps=[]),dict(unchecked_checks=0))
+            self.assertIsNotNone(load(root,ident))
+            path=root/'compiled-cache'/f'{ident}.json'
+            value=json.loads(path.read_text());value['receipt']['unchecked_checks']=1
+            path.write_text(json.dumps(value))
+            self.assertIsNone(load(root,ident))
+
     def test_work_model_and_workload_contents_and_presence_change_cache_identity(self):
         with tempfile.TemporaryDirectory() as directory, patch('ink_planner.offline_measurements.target_context',return_value={}):
             root=Path(directory)
