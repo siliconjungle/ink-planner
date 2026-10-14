@@ -9,10 +9,11 @@ def fit(store,rows,target_key):
     """Rows bind an immutable observation to exact compiled scope and boundary.
 
     Features are measured workload provenance, never sampled application values.
-    Domain bounds prohibit extrapolation; coefficients are untrusted hypotheses.
+    Per-feature bounds restrict each input range; they do not prevent joint
+    extrapolation between correlated features. Coefficients remain hypotheses.
     """
     if not isinstance(target_key,str)or not target_key or not isinstance(rows,list)or not rows or len(rows)>4096:raise ValueError('invalid fitting request')
-    groups={};refs=[]
+    groups={};refs=[];cohorts={}
     for row in rows:
         id=hash_id(row['observation']);observation=read(store.data/'observations'/f'{id}.json');Store.validate_observation(observation)
         if identity(observation)!=id:raise ValueError('observation hash mismatch')
@@ -27,6 +28,17 @@ def fit(store,rows,target_key):
         scope=row['scope']
         if not isinstance(scope,str)or not 0<len(scope)<=4096:raise ValueError('invalid compiled scope')
         key=(scope,boundary,backend)
+        # Only the declared fitted features may vary within a backend model.
+        # A scope label cannot make different binaries, machines or workload
+        # protocols comparable. Different backends may have different drivers
+        # and toolchains, so retain one exact provenance cohort per backend.
+        cohort=identity(dict(program=observation['program'],plan=observation['plan'],
+            entries=observation['entries'],target=observation['target'],
+            workload={k:({n:v for n,v in shape.items()if n!='features'}if k=='shape'else v)
+                      for k,v in observation['workload'].items()}))
+        if key in cohorts and cohorts[key]!=cohort:
+            raise ValueError('incomparable observation provenance for compiled scope/backend')
+        cohorts[key]=cohort
         groups.setdefault(key,[]).append((features,statistics.median(int(n)for n in observation['metrics']['complete_call_ns'])))
         refs.append(id)
     models={}
