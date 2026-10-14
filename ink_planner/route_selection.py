@@ -39,7 +39,7 @@ def main():
         route=json.loads(raw)
         if i==0:
             stages=route['stages']
-            if len(stages)!=1 or stages[0]['function']!=route['entry'] or stages[0]['backend']!='c' or stages[0]['domain']!='cpu' or route['output']!={'Stage':stages[0]['id']}:
+            if len(stages)!=1 or stages[0]['function']!=route['entry'] or stages[0]['backend']!='rust' or stages[0]['domain']!='cpu' or route['output']!={'Stage':stages[0]['id']}:
                 raise ValueError('baseline must be an unchanged whole-entry CPU stage')
         checked.append((hashlib.sha256(raw).hexdigest(),raw,json.loads(result.stdout),proof_bytes))
     if any(c[2]['core_sha256']!=checked[0][2]['core_sha256'] or c[2]['entry']!=checked[0][2]['entry'] for c in checked):raise ValueError('candidate core/entry mismatch')

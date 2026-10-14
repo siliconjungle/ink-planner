@@ -32,7 +32,7 @@ def produce(core, identity, entry, placements, baseline=False):
         id=f's{len(stages)}'
         mode=placements.get(name,'cpu')
         if mode not in ('cpu','gpu'): raise ValueError('placement must be cpu or gpu')
-        stages.append(dict(id=id,function=name,backend='gpu' if mode=='gpu' else 'c',domain=mode,arguments=refs))
+        stages.append(dict(id=id,function=name,backend='gpu' if mode=='gpu' else 'rust',domain=mode,arguments=refs))
         memo[key]={'Stage':id}
         return memo[key]
     try:
@@ -40,7 +40,7 @@ def produce(core, identity, entry, placements, baseline=False):
         output=reference(f['body'],f['result'])
     except ValueError:
         # Failure/exhaustion retains unchanged compiled entry, not a partial plan.
-        stages=[dict(id='whole',function=entry,backend='c',domain='cpu',arguments=[{'Input':i} for i in range(len(f['params']))])]
+        stages=[dict(id='whole',function=entry,backend='rust',domain='cpu',arguments=[{'Input':i} for i in range(len(f['params']))])]
         output={'Stage':'whole'}
     return dict(schema=1,semantics=SEMANTICS,input_core_sha256=identity,entry=entry,stages=stages,output=output)
 
