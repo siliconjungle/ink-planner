@@ -435,3 +435,45 @@ launches. Import/setup costs stay paired with their process. Missing or duplicat
 process/phase rows cannot authorise selection. Three processes improve coverage
 of process variation but do not establish calibrated confidence or universal
 absence of regressions.
+
+### Resuming corpus evaluations
+
+`python -m ink_planner.corpus` saves the compiler, catalogue, recipe, source and
+manifest identities alongside its execution environment. Resume and report-only
+operations require the same recorded context. Older reports without an environment
+record remain historical evidence; they cannot be resumed into the new format.
+
+Environment capture runs in a fresh interpreter using the same environment
+construction as corpus workers. It records Python/ABI/SQLite identity, selected
+import locations and actual files for the proof and optional discovery dependencies
+(`python-sat`, `six`, `numpy`, `hnswlib`, including the separate `pysolvers` module).
+Package version strings and RECORD entries alone are insufficient: edits to the
+installed files also change the context. JavaScript binds Node bytes/version
+response; Rust binds rustc and Cargo bytes/version responses, including rustup
+proxy responses. Host identity and a small explicit set of execution controls
+are recorded; control values are hashed, and unrelated environment variables
+are omitted. Package discovery does not import or certify optional native solvers.
+
+This records selected execution components, not a hermetic machine snapshot.
+It does not bind every system library, Cargo configuration file, hardware driver
+or arbitrary future plugin dependency, and it does not remove load, scheduling,
+random-seed or timing-budget variability. Extend the component list when adding
+execution dependencies. A missing package is recorded as missing rather than
+silently equated with an installed package; proof admission remains independent.
+
+Corpus startup captures every manifest program using `emit-core --capture-sources`.
+The compiler exports the exact source bytes it consumed (including transitive,
+absolute, symlinked and embedded standard imports) together with the identity of
+that same load's checked core. The captured root must match the manifest hash.
+Inputs are saved under `inputs/` and their identities bind resume/report-only
+operations. A source or dependency edit therefore requires a new evaluation;
+missing or changed saved input evidence is rejected. Acquisition failures stop
+before replacing context/records. Older compilers without source capture cannot
+run this harness.
+
+Planning uses a private copy of the captured core with normal `--core` checking;
+it never reopens the original source graph. Editing original files after capture
+cannot change that evaluation. Capture describes the bytes actually read, not an
+atomic snapshot of the entire filesystem. Each record separates source-capture
+and planning seconds; their sum is the reported total. Source capture is performed
+before corpus planning, so timing remains sensitive to cache state and contention.
