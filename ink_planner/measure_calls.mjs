@@ -15,6 +15,7 @@ function consume(v){
  if(typeof v==='number'){bits.setFloat64(0,v,true);return bits.getUint32(0,true)^bits.getUint32(4,true);}
  if(typeof v==='boolean')return Number(v);
  if(typeof v==='string'){let h=0;for(let i=0;i<v.length;i++)h=Math.imul(h,31)^v.charCodeAt(i);return h;}
+ if(v instanceof Uint8Array){let h=0;for(let i=0;i<v.length;i++)h=Math.imul(h,31)^v[i];return h;}
  let h=0;for(const x of Object.values(v))h=Math.imul(h,31)^consume(x);return h;
 }
 function shuffle(v){for(let i=v.length-1;i>0;i--){seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;const j=(seed>>>0)%(i+1);[v[i],v[j]]=[v[j],v[i]];}return v;}
@@ -37,31 +38,44 @@ function normalizedInput(value,type){
  if(type.kind==='record')return type.fields.map(f=>[f.name,normalizedInput(value[f.name],f.type)]);
  return value;
 }
+function prepareCall(mod,c,f){
+ const boundary=c.boundary??'trusted';
+ if(boundary==='trusted'){
+  if(!f.params.every(p=>jsonCompatible(p.type,mod.metadata.named_types))||!jsonCompatible(f.result,mod.metadata.named_types))throw Error('unsupported JSON transfer descriptor');
+  return {invoke:()=>mod.call(c.function,c.args),expected:c.expected};
+ }
+ if(!['portable','compact'].includes(boundary))throw Error('unsupported call boundary');
+ const codecs=mod.valueCodecs?.[c.function];if(!codecs)throw Error('missing typed wire interface');
+ const short=boundary==='compact',input=short?codecs.arguments.compact():codecs.arguments,output=short?codecs.result.compact():codecs.result;
+ const bytes=input.encode(Object.fromEntries(f.params.map((p,i)=>[p.name,c.args[i]]))),original=bytes.slice(),expected=output.encode(c.expected);
+ const invoke=()=>mod[short?'callCompact':'callBinary'](c.function,bytes);
+ return {invoke,expected,validate(){assert.deepStrictEqual(bytes,original,'candidate mutated encoded input');assert.deepStrictEqual(invoke(),expected,'candidate changed complete encoded output');}};
+}
 const input_fingerprints=new Set();
 for(const a of artifacts){
  try{
   const started=performance.now(),mod=await import(pathToFileURL(a.path));
   if(!mod.metadata||typeof mod.call!=='function')throw Error('artifact has no pure-call entries (a state representation module); the pure-call adapter measures pure entries only');
   const module_load_ms=String(performance.now()-started),validation_started=performance.now();
-  if(mod.metadata.state!==null)throw Error('pure-call adapter does not measure state lifecycles');
-  const captured=structuredClone(phases),calls=Object.values(captured).flat();
+  if(mod.metadata.state!==null&&Object.values(phases).flat().some(c=>!c.boundary))throw Error('pure-call adapter does not measure state lifecycles');
+  const captured=structuredClone(phases),calls=Object.values(captured).flat(),prepared=new Map();
   for(const c of calls){
    const f=mod.metadata.functions.find(f=>!f.internal&&f.name===c.function);
-   if(!f||!f.params.every(p=>jsonCompatible(p.type,mod.metadata.named_types))||!jsonCompatible(f.result,mod.metadata.named_types))throw Error('unsupported JSON transfer descriptor');
+   if(!f)throw Error('missing source function');
    const before=structuredClone(c.args);
-   assert.deepStrictEqual(mod.call(c.function,c.args),c.expected);
+   const call=prepareCall(mod,c,f);prepared.set(c,call);assert.deepStrictEqual(call.invoke(),call.expected);call.validate?.();
    assert.deepStrictEqual(c.args,before,'candidate mutated captured input');
    if(a.measurement===artifacts[0].measurement){
-    const input=JSON.stringify([c.function,c.args.map((v,i)=>normalizedInput(v,f.params[i].type))]);
+    const input=JSON.stringify([c.function,c.args.map((v,i)=>normalizedInput(v,f.params[i].type)),c.boundary??'trusted']);
     input_fingerprints.add(createHash('sha256').update(input).digest('hex'));
    }
   }
-  lanes.push({...a,mod,phases:captured,original:structuredClone(captured),module_load_ms,validation_ms:String(performance.now()-validation_started)});
+  lanes.push({...a,mod,phases:captured,prepared,original:structuredClone(captured),module_load_ms,validation_ms:String(performance.now()-validation_started)});
  }catch(e){rejected.push({measurement:a.measurement,reason:String(e)});}
 }
 if(!lanes.some(l=>l.measurement===artifacts[0].measurement))throw Error('baseline failed independent validation');
 for(const [phase,calls] of Object.entries(phases)){
- const invoke=l=>{for(const c of l.phases[phase])sink^=consume(l.mod.call(c.function,c.args));};
+ const invoke=l=>{for(const c of l.phases[phase])sink^=consume(l.prepared.get(c).invoke());};
  const counts=new Map(),samples=new Map();
  for(const l of shuffle([...lanes])){
   for(let i=0;i<8;i++)invoke(l);
@@ -77,7 +91,7 @@ for(const [phase,calls] of Object.entries(phases)){
 const valid=new Set();
 for(const l of lanes){try{
  assert.deepStrictEqual(l.phases,l.original,'candidate mutated input during measurement');
- for(const c of Object.values(l.phases).flat())assert.deepStrictEqual(l.mod.call(c.function,c.args),c.expected);
+ for(const c of Object.values(l.phases).flat()){const call=l.prepared.get(c);assert.deepStrictEqual(call.invoke(),call.expected);call.validate?.();}
  valid.add(l.measurement);
 }catch(e){rejected.push({measurement:l.measurement,reason:String(e)});}}
 if(!valid.has(artifacts[0].measurement))throw Error('baseline failed post-measurement validation');
