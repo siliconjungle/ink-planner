@@ -320,3 +320,19 @@ Holdout histories must differ from training transition histories, although setup
 and parameterless reads can recur. Holdout accepts or rejects the frozen winner.
 There are no application-time profitability probes. Current limits are 4,096 setup
 calls, 512 history calls, 64 phases, 1–8 processes and a 16 MB input workload.
+
+### Encoded call usage profiles
+
+Offline workload schema 3 adds a boundary field to each function/args call:
+trusted, portable or compact. Encoded inputs are prepared outside the timed call;
+timing includes validation, execution, complete reply encoding and consumption
+of every reply byte. Independent source execution supplies expected values.
+The adapter checks exact replies and unchanged input bytes before and after
+measurement, and rejects unsupported transfer data or targets.
+
+JavaScript automatic probes obtain their boundary mix from knowledge's
+automatic-selection.json. This is a bounded general usage model, not observed
+customer behaviour. Discovered observed profiles retain precedence. The
+database's boundary-readers recipe supplies implementation choices; no recipe
+dispatch or JSON recognition is added to the planner. Holdouts must contain new
+semantic inputs; switching the same value to another transport is insufficient.
