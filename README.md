@@ -491,3 +491,24 @@ cannot change that evaluation. Capture describes the bytes actually read, not an
 atomic snapshot of the entire filesystem. Each record separates source-capture
 and planning seconds; their sum is the reported total. Source capture is performed
 before corpus planning, so timing remains sensitive to cache state and contention.
+
+
+Modular semantic planning checks every proposed function chain together with the
+previously accepted functions. Cache replay, rejected hints and fresh searches
+share one checker budget and deadline; zero budgets preserve the baseline. The
+deadline stops new work but does not interrupt an in-flight synchronous checker.
+Final output validation remains the caller's separate mandatory replay. Invalid
+or oversized cache entries are misses, and bounded cache writes replace files
+atomically. Cache hints never supply proof authority.
+
+`--modular-cache` supports schema2 target-component costs, including the complete
+current helper context, incremental law-template discovery and streamed checked
+alternatives. Component scores remain search estimates, not runtime measurements.
+
+Seeded restarts share a single deadline as well as a checker-attempt budget.
+Each restart receives a share of the remaining time; a completed overrun cannot
+start another restart. Modular mode honours `--search-strategy`, seed, restarts,
+optional neighbour hints and scorer settings. Its trace records each local
+proposal digest together with the accepted-prefix digest. Every combined chain
+still replays against the original module. Neighbour queries change ordering
+only; rejected hints cannot suppress the remaining exact candidates.

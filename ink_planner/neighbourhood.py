@@ -7,9 +7,11 @@ are a deterministic sketch, not a learned semantic embedding.
 import hashlib
 import json
 import math
+import operator
 import time
 
 FEATURE_SCHEMA = 'ink-structural-sketch-v1-64'
+MAX_CACHE_BYTES = 16_000_000
 
 
 def sketch(term):
@@ -36,7 +38,7 @@ class Neighbourhood:
     def __init__(self, catalogue, *, seed=173, k=16, provider=None):
         if not 1 <= k <= 256 or not 0 <= seed < 2**31: raise ValueError('HNSW parameters')
         self.ids = tuple(sorted(set(catalogue['roots']))); self.k = k
-        self.index = None; self.np = None; self.cache = {}
+        self.index = None; self.np = None; self.cache = {}; self.cache_bytes = 0
         self.receipt = dict(feature_schema=FEATURE_SCHEMA, entries=len(self.ids), seed=seed,
                             k=k, M=16, ef_construction=100, ef=64, queries=0, failures=[],
                             authority='ordering hints; complete exact candidate set and proof replay retained')
@@ -65,15 +67,23 @@ class Neighbourhood:
         try:
             labels, _ = self.index.knn_query(self.np.asarray([sketch(target)], dtype=self.np.float32),
                                              k=min(self.k, len(self.ids)), num_threads=1)
-            result = tuple(self.ids[int(i)] for i in labels[0])
-            if len(set(result)) != len(result): raise ValueError('invalid HNSW labels')
+            if len(labels)!=1 or len(labels[0])!=min(self.k,len(self.ids)):
+                raise ValueError('invalid HNSW label shape')
+            indices=[operator.index(i) for i in labels[0]]
+            if any(isinstance(i,bool) for i in labels[0]) or any(not 0<=i<len(self.ids) for i in indices) or len(set(indices))!=len(indices):
+                raise ValueError('invalid HNSW labels')
+            result = tuple(self.ids[i] for i in indices)
             self.receipt['queries'] += 1
-            if len(self.cache) >= 4096: self.cache.clear()
-            self.cache[key] = result
+            size=len(key.encode())
+            if size<=MAX_CACHE_BYTES:
+                if len(self.cache)>=4096 or self.cache_bytes+size>MAX_CACHE_BYTES:
+                    self.cache.clear();self.cache_bytes=0
+                self.cache[key]=result;self.cache_bytes+=size
             return result
         except Exception as error:
             self.receipt['failures'].append(str(error)); self.index = None
             self.receipt['active'] = False
+            self.cache.clear();self.cache_bytes=0
             return ()
 
     def order(self, pending, hinted, round_index):

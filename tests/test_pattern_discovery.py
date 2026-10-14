@@ -1,5 +1,6 @@
 import tempfile,sqlite3,unittest
 from pathlib import Path
+from contextlib import closing
 from ink_knowledge import Store,semantic_entry
 from ink_knowledge.pattern_index import candidates
 from ink_planner.semantic_search import discover_roots
@@ -18,7 +19,7 @@ class PatternDiscovery(unittest.TestCase):
     def test_legacy_index_and_missing_index_remain_conservative_then_migrate(self):
         with tempfile.TemporaryDirectory()as tmp:
             objects,seed=self.laws();store=Store.publish(tmp,objects);store.refresh_index()
-            with sqlite3.connect(store.root/'index.sqlite')as db:
+            with closing(sqlite3.connect(store.root/'index.sqlite'))as db,db:
                 db.execute('DROP TABLE pattern_roots');db.execute('DROP TABLE pattern_targets')
             self.assertEqual(len(discover_roots(store,[value('U32')],[seed])),3)
             store.refresh_index();self.assertEqual(len(discover_roots(store,[value('U32')],[seed])),2)
