@@ -368,6 +368,12 @@ later groups. Process and overall deadlines remain in force. This lets an
 expensive proof author run before quick families consume the parent's budget.
 Priority grants neither proof admission nor profitability and cannot force
 selection. The installed maintained-fold recipe currently has priority -10.
+Without observed call frequencies, the exploration estimate keeps the original
+source functions/actions as its default entry workload. A conservative extension
+cannot make an unused helper look like an additional user call. Added helpers
+still contribute when reachable; observed workload counts take precedence. This
+is an unmeasured search estimate, not permission to select an implementation.
+
 Within each priority group, recipes with fewer actual dispatches start first.
 Bounded expansion reserves a first response from each eligible family before
 releasing additional proposals from a fast family. Pending raw proposals use a

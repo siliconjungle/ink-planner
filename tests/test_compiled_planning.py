@@ -2,6 +2,29 @@ import unittest
 from ink_planner.compiled_planning import explore,structural_priority,workload_frequencies
 
 class WorkloadPriorities(unittest.TestCase):
+    def test_original_entry_workload_does_not_charge_unused_extension_helpers(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from ink_planner.compiled_planning import Planner
+        planner=Planner.__new__(Planner)
+        planner.options=SimpleNamespace(observed_frequencies={})
+        planner.default_frequencies={'call:main':1}
+        fn=lambda name,body:dict(name=name,params=[],body=body)
+        baseline=dict(program=dict(records={},functions=[fn('main',{'Call':['scalar',[]]})]))
+        extension=dict(program=dict(records={},functions=[*baseline['program']['functions'],
+            fn('helper',{'Method':[{'Var':'xs'},'expensive',[]]})]))
+        prices={'estimate:scalar':1,'estimate:collection':100}
+        with patch('ink_knowledge.cost_models.structural_prices',return_value=prices):
+            self.assertEqual(planner.priority({'core':baseline}),1)
+            self.assertEqual(planner.priority({'core':extension}),1)
+            extension['program']['functions'][0]=fn('main',{'Call':['helper',[]]})
+            self.assertEqual(planner.priority({'core':extension}),101)
+            planner.options.observed_frequencies={'call:main':7}
+            self.assertEqual(planner.priority({'core':extension}),707)
+            # An explicitly observed extra entry still contributes its work.
+            planner.options.observed_frequencies={'call:helper':3}
+            self.assertEqual(planner.priority({'core':extension}),300)
+
     def test_phase_labels_bind_actual_calls_and_reachable_helpers(self):
         spec=dict(profile={'training-a':2,'training-b':3},phases={
             'training-a':[dict(function='main',args=[])],

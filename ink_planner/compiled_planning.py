@@ -179,6 +179,12 @@ class Planner:
         self.snapshot=Store(root,getattr(options,'snapshot',None)).snapshot_id
         self.compiler_hash=hashlib.sha256(compiler.read_bytes()).hexdigest();self.notes=[];self.models={};self.admissions={};self.serial=0
         self.recipe_dispatches={}
+        # Conservative extensions add helpers, not new caller entry points.
+        # With no observed workload, keep the original source roots fixed;
+        # reachable new helpers still contribute their ordinary search price.
+        program=json.loads(original.read_bytes())['program']
+        self.default_frequencies={**{'call:'+f['name']:1 for f in program.get('functions',[])},
+                                  **{'action:'+a['name']:1 for a in program.get('actions',[])}}
         self.session=None;self.reused_steps=0;self.recipe_cache_hits=0;atexit.register(self.close)
         self.deadline=time.monotonic()+getattr(options,"time_seconds",getattr(options,"planning_seconds",3600))
         self.code_hash=code_fingerprint()
@@ -357,7 +363,9 @@ class Planner:
         # The structural hypothesis orders exploration only. It cannot select a
         # physically different implementation without comparable observations.
         from ink_knowledge.cost_models import structural_prices
-        return structural_priority(state['core'],getattr(self.options,'observed_frequencies',{}),structural_prices())
+        observed=getattr(self.options,'observed_frequencies',{})
+        frequencies=observed if any(weight>0 for weight in observed.values()) else self.default_frequencies
+        return structural_priority(state['core'],frequencies,structural_prices())
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
