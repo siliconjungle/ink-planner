@@ -28,6 +28,10 @@ with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-'
     assert result.returncode==0,result.stderr
     packet=json.loads(plan.read_text());receipt=json.loads(Path(str(plan)+'.receipt.json').read_text())
     assert receipt['automatic_probe']['calls'] and receipt['measurement_acquisition'],receipt
+    shortlist=receipt['measurement_acquisition']['shortlist']
+    assert shortlist['allocation']=='first admitted recipe ancestry before repeated family variants',shortlist
+    assert set(shortlist['measured_families'])<=set(shortlist['admitted_families']),shortlist
+    assert 'semantic-laws' in shortlist['measured_families'],shortlist
     if target=='javascript':
         # Profitability is workload/host dependent. Acquisition must compare
         # admitted alternatives; an uncertainty-guarded baseline is valid.

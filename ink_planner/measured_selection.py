@@ -2,11 +2,29 @@
 import math, random, statistics
 from ink_knowledge import identity
 
-def shortlist(states,priority,limit):
+def proposal_families(states,edges):
+    """First admitted ancestry, for allocating measurements, never authority.
+
+    Edges are chronological admissions. Later routes to an existing state do
+    not change the package retained for it and must not inflate its coverage.
+    """
+    if not states:return []
+    families={states[0]:frozenset()}
+    for edge in edges:
+        if edge['target'] in families:continue
+        if edge['source'] not in families:continue
+        recipe=edge.get('recipe')
+        families[edge['target']]=families[edge['source']]|({recipe} if recipe else set())
+    return [families.get(state,frozenset()) for state in states]
+
+def shortlist(states,priority,limit,families=None):
     """Preserve source diversity before filling physical variants of one source.
 
     Properties remain in search states and their proof packets. They do not by
-    themselves describe another executable measurement boundary.
+    themselves describe another executable measurement boundary. A family is
+    proposal provenance, not a quality score: reserve its first measurement
+    before spending the rest of the budget on additional variants. The original
+    source/cost ordering breaks ties and fills unused slots.
     """
     seen=set();groups={};baseline=states[0]['source']
     for i,state in enumerate(states):
@@ -20,7 +38,14 @@ def shortlist(states,priority,limit):
     first=sorted((v[0]for v in groups.values()if v[0]!=0),key=lambda i:(states[i]['source']==baseline,priority(states[i]),i))
     rest=sorted((i for values in groups.values()for i in values[1:]if i!=0),key=lambda i:(priority(states[i]),i))
     order.extend(first);order.extend(rest)
-    return list(dict.fromkeys(order))[:limit]
+    order=list(dict.fromkeys(order))
+    if families is None:return order[:limit]
+    if len(families)!=len(states):raise ValueError('candidate family count mismatch')
+    chosen=[0];covered=set(families[0])
+    for i in order[1:]:
+        if set(families[i])-covered:
+            chosen.append(i);covered.update(families[i])
+    return list(dict.fromkeys(chosen+order))[:limit]
 
 def choose(report,profile,baseline,policy,setup_ns=None):
     """Paired bootstrap over interleaved rounds, with a bounded comparison guard.

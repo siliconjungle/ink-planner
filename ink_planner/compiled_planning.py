@@ -487,12 +487,17 @@ def main():
             if any(getattr(args,n)is not None for n in ['profile','workload','target_profile']) or args.migration_count:raise ValueError('offline pure-call acquisition cannot combine existing profiles or migration')
             from .offline_measurements import acquire,validated
             from ink_knowledge.selection_probes import policy
-            from .measured_selection import shortlist
+            from .measured_selection import shortlist,proposal_families
             controls=policy() if automatic_probe is not None else None;checked_states=[s for _,s in states.values()]
-            indices=shortlist(checked_states,planner.priority,controls['candidates']) if controls else list(range(len(packages)))
+            families=proposal_families([fingerprint(s) for s in checked_states],receipt['edges'])
+            indices=shortlist(checked_states,planner.priority,controls['candidates'],families) if controls else list(range(len(packages)))
             try:
                 target,workload,profile,acquisition=acquire(planner,store,[packages[i]for i in indices],[checked_states[i]for i in indices],[measurements[i]for i in indices],args.measure_workload,controls)
-                acquisition['shortlist']=dict(measured_indices=indices,admitted=len(packages),limit=controls['candidates'] if controls else len(packages),unmeasured_reason='bounded automatic measurement candidate budget')
+                acquisition['shortlist']=dict(measured_indices=indices,admitted=len(packages),limit=controls['candidates'] if controls else len(packages),
+                    measured_families=sorted(set().union(*(families[i] for i in indices))),
+                    admitted_families=sorted(set().union(*families)),
+                    allocation='first admitted recipe ancestry before repeated family variants' if controls else 'all admitted candidates',
+                    unmeasured_reason='bounded automatic measurement candidate budget')
             except (ValueError,OSError,subprocess.TimeoutExpired)as error:
                 if automatic_probe is None:raise
                 automatic_probe['reason']='offline probes declined: '+str(error)[-2000:]

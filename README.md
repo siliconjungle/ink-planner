@@ -260,7 +260,12 @@ costs only order discovery; they do not establish correctness or profitability.
 
 Without supplied lifecycle evidence, JavaScript and Rust compilation can acquire
 bounded synthetic typed probes from knowledge's `automatic-selection.json`.
-Source-diverse checked candidates undergo interleaved complete-output measurements
+The bounded shortlist reserves measurements for distinct admitted proposal
+families before filling remaining slots with additional variants, retaining
+source diversity and operational deduplication. Family labels allocate search
+effort only; they never admit or select an implementation. Receipts report both
+admitted and measured families so a missed measurement remains visible.
+Shortlisted checked candidates undergo interleaved complete-output measurements
 and independent reference/input checks. Setup enters the lifecycle estimate; a
 comparison-adjusted paired uncertainty guard requires at least 5% improvement.
 Synthetic calls do not describe actual user usage, and some input regimes can

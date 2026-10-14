@@ -23,6 +23,31 @@ class MeasuredSelection(unittest.TestCase):
 
 
 class CandidateIdentity(unittest.TestCase):
+    def test_many_cheap_variants_do_not_use_every_slot_before_a_distinct_family(self):
+        from ink_planner.measured_selection import shortlist
+        states=[dict(source='baseline')]+[dict(source='variant-'+str(i))for i in range(20)]+[dict(source='different',price=100)]
+        families=[set()]+[{'rewrites'}for _ in range(20)]+[{'representation'}]
+        self.assertEqual(shortlist(states,lambda s:s.get('price',0),4,families),[0,1,21,2])
+        # A proposal label never makes an unemittable state measurable.
+        states[-1]['capability']={'emittable':False}
+        self.assertEqual(shortlist(states,lambda s:s.get('price',0),4,families),[0,1,2,3])
+
+    def test_family_diversity_keeps_operational_deduplication_and_baseline(self):
+        from ink_planner.measured_selection import shortlist
+        states=[dict(source='baseline'),dict(source='baseline',properties=['fact']),dict(source='new'),dict(source='new')]
+        families=[set(),{'properties'},{'rewrite'},{'another-route'}]
+        self.assertEqual(shortlist(states,lambda _:0,8,families),[0,2])
+        self.assertEqual(shortlist(states,lambda _:0,1,families),[0])
+        with self.assertRaisesRegex(ValueError,'family count'):shortlist(states,lambda _:0,8,[])
+
+    def test_family_ancestry_follows_the_retained_first_admitted_path(self):
+        from ink_planner.measured_selection import proposal_families
+        edges=[dict(source='base',target='a',recipe='rewrite'),dict(source='a',target='b',recipe='layout'),
+               dict(source='base',target='b',recipe='other-route'),dict(source='b',target='base',recipe='cycle'),
+               dict(source='missing',target='unreached',recipe='unknown')]
+        self.assertEqual(proposal_families(['base','a','b','unreached'],edges),[set(),{'rewrite'},{'rewrite','layout'},set()])
+        self.assertEqual(proposal_families([],edges),[])
+
     def test_maintained_and_protocol_implementations_are_not_discarded_as_baseline(self):
         from ink_planner.measured_selection import shortlist
         states=[dict(source='same'),dict(source='same',maintained={'package_sha256':'sum'}),
