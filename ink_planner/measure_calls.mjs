@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {performance} from 'node:perf_hooks';
 import {createHash} from 'node:crypto';
-const {artifacts,phases,measurement={}}=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+import {unpackTransfer} from './value_transfer.mjs';
+const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const {artifacts,measurement={}}=request,phases=request.exact_transfer?unpackTransfer(request.phases):request.phases;
 const rounds=measurement.rounds??11,minBatch=measurement.minimum_batch_ms??5,maxCalls=measurement.maximum_calls_per_sample??1024;
 if(!Number.isInteger(rounds)||rounds<9||rounds>64||!Number.isInteger(minBatch)||minBatch<1||minBatch>50||!Number.isInteger(maxCalls)||maxCalls<1||maxCalls>65536)throw Error('bounded measurement controls required');
 const rows=[],rejected=[],lanes=[];
@@ -14,6 +16,7 @@ function consume(v){
  if(v===null||v===undefined)return 0;
  if(typeof v==='number'){bits.setFloat64(0,v,true);return bits.getUint32(0,true)^bits.getUint32(4,true);}
  if(typeof v==='boolean')return Number(v);
+ if(typeof v==='bigint'){let n=v<0n?-v:v,h=Number(v<0n);do{h=Math.imul(h,31)^Number(n&4294967295n);n>>=32n;}while(n);return h;}
  if(typeof v==='string'){let h=0;for(let i=0;i<v.length;i++)h=Math.imul(h,31)^v.charCodeAt(i);return h;}
  if(v instanceof Uint8Array){let h=0;for(let i=0;i<v.length;i++)h=Math.imul(h,31)^v[i];return h;}
  let h=0;for(const x of Object.values(v))h=Math.imul(h,31)^consume(x);return h;
@@ -28,14 +31,18 @@ function jsonCompatible(t,named,active=new Set()){
  if(t.kind==='record')return t.fields.every(x=>jsonCompatible(x.type,named,active));
  return false;
 }
-function normalizedInput(value,type){
+function normalizedInput(value,type,named){
+ for(let i=0;type.kind==='ref';i++){if(i>=64||!named?.[type.name])throw Error('measurement input reference');type=named[type.name];}
+ if(type.kind==='u64')return {u64:value.toString()};
  if(type.kind==='f32'){
   const words=new Uint32Array(1),floats=new Float32Array(words.buffer);
   if(value&&typeof value==='object'&&Object.hasOwn(value,'F32Bits'))words[0]=value.F32Bits;else floats[0]=value;
   return {f32_bits:words[0]};
  }
- if(['list','vector'].includes(type.kind))return value.map(v=>normalizedInput(v,type.element));
- if(type.kind==='record')return type.fields.map(f=>[f.name,normalizedInput(value[f.name],f.type)]);
+ if(['list','vector'].includes(type.kind))return value.map(v=>normalizedInput(v,type.element,named));
+ if(type.kind==='record')return type.fields.map(f=>[f.name,normalizedInput(value[f.name],f.type,named)]);
+ if(type.kind==='option')return Object.hasOwn(value,'Some')?{Some:normalizedInput(value.Some,type.element,named)}:{None:null};
+ if(type.kind==='result')return Object.hasOwn(value,'Ok')?{Ok:normalizedInput(value.Ok,type.ok,named)}:{Err:normalizedInput(value.Err,type.error,named)};
  return value;
 }
 function prepareCall(mod,c,f){
@@ -66,7 +73,7 @@ for(const a of artifacts){
    const call=prepareCall(mod,c,f);prepared.set(c,call);assert.deepStrictEqual(call.invoke(),call.expected);call.validate?.();
    assert.deepStrictEqual(c.args,before,'candidate mutated captured input');
    if(a.measurement===artifacts[0].measurement){
-    const input=JSON.stringify([c.function,c.args.map((v,i)=>normalizedInput(v,f.params[i].type)),c.boundary??'trusted']);
+    const input=JSON.stringify([c.function,c.args.map((v,i)=>normalizedInput(v,f.params[i].type,mod.metadata.named_types)),c.boundary??'trusted']);
     input_fingerprints.add(createHash('sha256').update(input).digest('hex'));
    }
   }
