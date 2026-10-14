@@ -436,6 +436,20 @@ process/phase rows cannot authorise selection. Three processes improve coverage
 of process variation but do not establish calibrated confidence or universal
 absence of regressions.
 
+### Complete engine cost profiles
+
+Complete browser-engine observations can be imported with
+`ink_planner.engine_profiles.fit_records`. Each training process must cover the
+same validated cases with explicit CPU and actual GPU timings for the entire
+owned operation, including engine creation and disposal. The importer preserves
+the distinct `ink-resident-engine-v1` scope and uses the existing cost fitter,
+joint support and database feature-product basis. Session-only timings,
+evaluation data, changed build/target provenance, duplicated processes and
+incomplete case coverage cannot produce a model through this importer. The
+distribution's `bench/gpu/fit-engine-profile.py` records source and training-file
+identities alongside immutable observations. These are empirical cost estimates;
+fresh held-out evaluation is still required, and CPU/driver memory is unmeasured.
+
 ### Resuming corpus evaluations
 
 `python -m ink_planner.corpus` saves the compiler, catalogue, recipe, source and
