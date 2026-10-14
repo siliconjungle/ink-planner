@@ -12,8 +12,9 @@ class CallbackWorkTests(unittest.TestCase):
   def fold(body):return op(s,'custom:walk',xs,var(s,'zero'),lam(s,lam(s,body)))
   inner=fold(binary('+',binary('*',x,k),a))
   outer=binary('*',fold(binary('+',x,a)),k)
-  self.assertEqual(cost(inner),cost(outer))
-  self.assertEqual(cost(inner,{}),cost(outer,{}))
+  self.assertEqual(cost(inner,{'estimate:loop_iterations':1}),cost(outer,{'estimate:loop_iterations':1}))
+  self.assertLess(cost(outer),cost(inner))
+  self.assertLess(cost(outer,{}),cost(inner,{}))
   policy={'estimate:loop_iterations':16}
   self.assertLess(cost(outer,policy),cost(inner,policy))
   law=dict(params={'xs':xs['sort'],'zero':s,'k':s},conditions=[],**{'from':inner,'to':outer})

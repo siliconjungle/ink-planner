@@ -8,7 +8,8 @@ from producers.semantic_laws import value,var,bound,lam,op,binary,arrow
 class StaticBindingCostTests(unittest.TestCase):
  def test_optional_price_preserves_argument_and_body_work(self):
   s=value('U32');x=var(s,'x');arg=binary('*',x,x);callback=lam(s,binary('+',bound(s,0),bound(s,0)));term=op(s,'apply',callback,arg)
-  self.assertEqual(cost(term,{'apply':20}),20+cost(callback)+cost(arg))
+  self.assertEqual(cost(term,{'apply':20,'estimate:let_binding':None}),20+cost(callback)+cost(arg))
+  self.assertEqual(cost(term),cost(callback)+cost(arg))
   self.assertEqual(cost(term,{'apply':20,'estimate:let_binding':1}),1+cost(callback)+cost(arg))
   unknown=op(s,'apply',var(arrow(s,s),'f'),arg)
   self.assertEqual(cost(unknown,{'apply':20,'estimate:let_binding':1}),cost(unknown,{'apply':20}))
