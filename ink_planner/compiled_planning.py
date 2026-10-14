@@ -178,6 +178,7 @@ class Planner:
         self.recipes,self.registry_digest,self.options=recipes,registry_digest,options
         self.snapshot=Store(root,getattr(options,'snapshot',None)).snapshot_id
         self.compiler_hash=hashlib.sha256(compiler.read_bytes()).hexdigest();self.notes=[];self.models={};self.admissions={};self.serial=0
+        self.recipe_dispatches={}
         self.session=None;self.reused_steps=0;self.recipe_cache_hits=0;atexit.register(self.close)
         self.deadline=time.monotonic()+getattr(options,"time_seconds",getattr(options,"planning_seconds",3600))
         self.code_hash=code_fingerprint()
@@ -270,7 +271,7 @@ class Planner:
                 cache=self.directory/('recipe-'+key+'.jsonl'),stdout=self.directory/(key+'.stdout'),stderr=self.directory/(key+'.stderr')))
         from .recipe_streams import run
         stream=run(jobs,getattr(self.options,'recipe_workers',2),self.deadline,self.options.proposal_timeout,
-            min(128_000_000,getattr(self.options,'memory_bytes',512_000_000)))
+            min(128_000_000,getattr(self.options,'memory_bytes',512_000_000)),dispatch_counts=self.recipe_dispatches)
         try:
             for job,event in stream:
                 recipe=job['recipe'];name=recipe['id'];key=job['key']
@@ -345,6 +346,7 @@ def main():
     p.add_argument('--measure-holdout',type=Path,help='independent inputs that may reject, but never choose, the calibrated alternative')
     p.add_argument('--minimum-measured-gain-ppm',type=int,default=100000,help='minimum observed lifecycle gain for freshly calibrated alternatives (default 10%%)')
     p.add_argument('--measure-timeout',type=int,default=120)
+    p.add_argument('--reference-budget',type=int,default=100_000_000,help='bounded independent reference-evaluator operations per pure selection call; outside timing')
     p.add_argument('--measure-processes',type=int,default=3,help='fresh offline timing processes, sharing the measurement time budget')
     p.add_argument('--measurement-mode',choices=['auto','off'],default='auto',help='automatically acquire bounded pure typed probes when no workload evidence exists')
     p.add_argument('--cache',choices=['auto','off'],default='auto',help='reuse same-epoch bounded plans with fresh proof replay')
@@ -359,6 +361,7 @@ def main():
     if args.state_limit<1 or args.memory_bytes<1 or args.check_timeout<1 or args.proposal_timeout<1:p.error('positive state/memory/process budgets required')
     if args.semantic_rounds is not None and args.semantic_rounds<0:p.error('semantic rounds must be nonnegative')
     if not 1<=args.measure_timeout<=600:p.error('measurement process budget must be between 1 and 600 seconds')
+    if not 1<=args.reference_budget<=10_000_000_000:p.error('reference budget must be between 1 and 10000000000 operations')
     if not 1<=args.measure_processes<=8:p.error('measurement processes must be between 1 and 8')
     if not 0<=args.minimum_measured_gain_ppm<1_000_000:p.error('minimum measured gain must be between 0 and 999999 ppm')
     if args.measure_holdout and not args.measure_workload:p.error('holdout requires a measurement workload')
@@ -524,6 +527,8 @@ def main():
         receipt.update(dict(schema=1,semantics=SEMANTICS,status='checked',source=source,compiler_sha256=planner.compiler_hash,
             registry_sha256=digest,producer_sha256=planner.code_hash,planning_budgets=dict(effort=args.planning_effort,recipe_workers=args.recipe_workers,**{name:getattr(args,name)for name in EFFORTS['balanced']}),reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
             selection=selection,automatic_probe=automatic_probe,measurement_acquisition=acquisition,work_acquisition=work,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
+        receipt['recipe_scheduling']=dict(dispatches=planner.recipe_dispatches,
+            scope='Actual worker/cache dispatch opportunities across expansions; least-served families within database priorities. No proof or profitability authority.')
         from .planning_diagnostics import diagnose
         receipt['diagnostics']=diagnose(receipt)
         Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')

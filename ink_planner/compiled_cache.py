@@ -18,7 +18,7 @@ def key(planner,source,snapshot,options,usage_profiles):
     except (ValueError,OSError):host=None
     fields=['target','planning_effort','budget','state_limit','expansion_limit','time_seconds','memory_bytes','check_timeout',
             'proposal_timeout','recipe_workers','semantic_seconds','semantic_budget','semantic_rounds','candidate_limit',
-            'measure_timeout','measure_processes','minimum_measured_gain_ppm','measurement_mode','migration_count','memory_limit']
+            'measure_timeout','reference_budget','measure_processes','minimum_measured_gain_ppm','measurement_mode','migration_count','memory_limit']
     return identity(dict(schema=1,source=source,snapshot=snapshot,compiler=planner.compiler_hash,code=planner.code_hash,
                          registry=planner.registry_digest,options={k:getattr(options,k,None)for k in fields},
                          inputs=inputs,usage=usage_profiles,host=host))

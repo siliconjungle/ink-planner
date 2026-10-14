@@ -29,9 +29,11 @@ class OfflineMeasurements(unittest.TestCase):
             meta=dict(state=None,named_types={},functions=[dict(name='run',internal=False,params=[],result={'kind':'u32'})])
             class Emitter:
                 directory=root;original=root/'source';compiler_hash=hashlib.sha256(compiler.read_bytes()).hexdigest();code_hash=fingerprint
-                options=SimpleNamespace(target='javascript',measure_processes=3,measure_timeout=30,check_timeout=30)
+                options=SimpleNamespace(target='javascript',measure_processes=3,measure_timeout=30,check_timeout=30,reference_budget=12345)
                 def invoke(self,command,*args,**kwargs):
-                    if command=='run':return 1
+                    if command=='run':
+                        assert args[-2:]==('--evaluation-budget','12345')
+                        return 1
                     artifact=args[-1]
                     source='export const metadata='+json.dumps(meta)+';'
                     if artifact.name.startswith('b'):
@@ -43,6 +45,7 @@ class OfflineMeasurements(unittest.TestCase):
             baseline='a'*64;candidate='b'*64
             target,shape,weights,receipt=acquire(Emitter(),store,[{'input_core_sha256':'c'*64}]*2,[{}]*2,[baseline,candidate],workload)
             self.assertEqual(receipt['acquisition']['processes'],3)
+            self.assertEqual(receipt['reference_budget'],12345)
             self.assertEqual({row['measurement']for row in receipt['acquisition']['rows']},{baseline})
             self.assertEqual({row['measurement']for row in receipt['rejected']},{candidate})
             self.assertEqual(receipt['validated_measurements'],[baseline])

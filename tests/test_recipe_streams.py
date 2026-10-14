@@ -96,6 +96,24 @@ class RecipeStreams(unittest.TestCase):
         jobs=[dict(key=str(i),recipe=dict(stage=stage,priority=level))for i,(stage,level)in enumerate([
             ('a',0),('a',-1),('a',-1),('b',-1),('b',0),('a',0)])]
         self.assertEqual([j['key']for j in interleave_stages(jobs)],['1','3','2','0','4','5'])
+    def test_early_expansion_close_does_not_restart_the_same_family_forever(self):
+        counts={};first=[]
+        with tempfile.TemporaryDirectory()as tmp:
+            for expansion in range(3):
+                root=Path(tmp)/str(expansion);root.mkdir()
+                jobs=self.jobs(root,["import sys,time;f=open(sys.argv[1],'w');f.write('header\\nproposal\\n');f.flush();time.sleep(30)"]*3)
+                for i,job in enumerate(jobs):job['recipe']={'id':f'family-{i}','stage':'rewrite'}
+                stream=run(jobs,1,time.monotonic()+5,3,dispatch_counts=counts)
+                try:
+                    job,event=next(stream);first.append(job['recipe']['id'])
+                    self.assertEqual(event['raw'],b'header')
+                finally:stream.close()
+        self.assertEqual(first,['family-0','family-1','family-2'])
+        self.assertEqual(counts,dict.fromkeys(first,1))
+    def test_dispatch_history_does_not_override_database_priorities(self):
+        from ink_planner.recipe_streams import interleave_stages
+        jobs=[dict(key='a',recipe=dict(id='a',stage='x',priority=-1)),dict(key='b',recipe=dict(id='b',stage='x')),dict(key='c',recipe=dict(id='c',stage='y'))]
+        self.assertEqual([j['key']for j in interleave_stages(jobs,{'a':100,'b':10})],['a','c','b'])
     def test_early_consumer_close_kills_worker(self):
         with tempfile.TemporaryDirectory()as tmp:
             jobs=self.jobs(Path(tmp),["import sys,time;f=open(sys.argv[1],'w');f.write('header\\n');f.flush();time.sleep(30)"])

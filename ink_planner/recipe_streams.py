@@ -11,13 +11,21 @@ def priority(job):
     return (job.get('recipe')or{}).get('priority',0)
 
 
-def interleave_stages(jobs):
+def family(job):
+    return (job.get('recipe')or{}).get('id',job['key'])
+
+
+def interleave_stages(jobs,dispatch_counts=None):
     """Give each published stage a dispatch opportunity before its second job.
 
     Stage names are untrusted scheduling data, never applicability or authority.
     Smaller database priorities run first. Interleave stages within each priority;
-    keep within-stage order and every job. Missing metadata retains FIFO.
+    keep every job. Within each priority, previously unserved families get the
+    next opportunity across expansions. Stable ordering breaks ties; without
+    dispatch history, missing metadata retains FIFO.
     """
+    counts=dispatch_counts or {}
+    jobs=sorted(jobs,key=lambda job:counts.get(family(job),0))
     groups={}
     for job in jobs:
         stage=(job.get('recipe')or{}).get('stage','')
@@ -46,13 +54,13 @@ def stop(process):
     process.wait()
 
 
-def run(jobs,workers,deadline,timeout,byte_limit=128_000_000):
+def run(jobs,workers,deadline,timeout,byte_limit=128_000_000,dispatch_counts=None):
     """Yield (job,event) in round-robin order; all processes close on early exit.
 
     Jobs supply command, env, output, cache and log paths. Output is NDJSON;
     registry/header validation and mathematical admission belong to the caller.
     """
-    pending=deque(interleave_stages(jobs));active=[]
+    pending=deque(interleave_stages(jobs,dispatch_counts));active=[]
     def launch(job):
         started=time.monotonic();output=job['output'];cached=job['cache'].exists()
         if cached:
@@ -72,7 +80,13 @@ def run(jobs,workers,deadline,timeout,byte_limit=128_000_000):
                 # then let other families run alongside remaining variants.
                 # A slow variant must not monopolise the overall time budget.
                 if any(priority(pending[0])>priority(s['job'])and s['rows']<2 for s in active):break
-                active.append(launch(pending.popleft()))
+                job=pending.popleft()
+                active.append(launch(job))
+                # Count actual opportunities, including cached/failed workers.
+                # Merely queued jobs must not lose their place when a parent
+                # expansion closes early. No result or proof is reused here.
+                if dispatch_counts is not None:
+                    name=family(job);dispatch_counts[name]=dispatch_counts.get(name,0)+1
             progress=False
             for state in list(active):
                 job=state['job'];process=state['process'];error=None

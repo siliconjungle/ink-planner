@@ -45,9 +45,9 @@ class ExpansionDiagnostics(unittest.TestCase):
             planner.registry_digest='registry';planner.deadline=time.monotonic()+5
             planner.options=SimpleNamespace(target='rust',registry=None,check_timeout=1,proposal_timeout=1,semantic_budget=1,semantic_rounds=1,candidate_limit=4,memory_bytes=1000000)
             planner.recipes=[dict(id=name,inputs=['core']) for name in ['fast','still-working','not-started']]
-            planner.notes=[];planner.recipe_cache_hits=0;planner.model=lambda _:None
+            planner.notes=[];planner.recipe_cache_hits=0;planner.recipe_dispatches={};planner.model=lambda _:None
             closed=[]
-            def stream(jobs,*args):
+            def stream(jobs,*args,**kwargs):
                 try:
                     yield jobs[0],dict(kind='line',raw=canonical(dict(recipe='fast',registry_sha256='registry')))
                     yield jobs[0],dict(kind='line',raw=canonical(dict(status='proposal',label='candidate',step=dict(kind='physical',package={}))))

@@ -64,9 +64,9 @@ class AuthoringEpoch(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch('ink_planner.offline_measurements.target_context',return_value={}):
             root=Path(directory);held=root/'holdout.json';held.write_text('{}')
             planner=SimpleNamespace(compiler_hash='a'*64,registry_digest='b'*64,code_hash='c'*64)
-            options=SimpleNamespace(measure_holdout=held,measure_processes=3,minimum_measured_gain_ppm=100000)
+            options=SimpleNamespace(measure_holdout=held,measure_processes=3,minimum_measured_gain_ppm=100000,reference_budget=100_000_000)
             original=key(planner,'source','snapshot',options,[])
-            for field,value in [('measure_processes',4),('minimum_measured_gain_ppm',200000)]:
+            for field,value in [('measure_processes',4),('minimum_measured_gain_ppm',200000),('reference_budget',200_000_000)]:
                 previous=getattr(options,field);setattr(options,field,value)
                 self.assertNotEqual(original,key(planner,'source','snapshot',options,[]))
                 setattr(options,field,previous)

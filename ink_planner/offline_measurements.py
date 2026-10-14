@@ -101,13 +101,15 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     workload['shape']=dict(inputs_sha256=digest,declared=workload['shape'])
     if workload['concurrency']!=1:raise ValueError('serial call adapter requires concurrency=1')
     Store.validate_observation(dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=measurements[0],target=target,workload=workload,metrics=dict(complete_call_ns=['0'],peak_bytes=None)))
+    reference_budget=getattr(planner.options,'reference_budget',100_000_000)
+    if type(reference_budget)is not int or not 1<=reference_budget<=10_000_000_000:raise ValueError('reference evaluation budget')
     phases={};oracle_started=time.monotonic()
     # Reference execution is independently implemented and outside timing.
     for phase,rows in spec['phases'].items():
         phases[phase]=[]
         for i,row in enumerate(rows):
             args=planner.directory/'reference-args.json';args.write_text(json.dumps(row['args'],allow_nan=False))
-            expected=planner.invoke('run',planner.original,row['function'],args,'--core',timeout=remaining())
+            expected=planner.invoke('run',planner.original,row['function'],args,'--core','--evaluation-budget',str(reference_budget),timeout=remaining())
             if isinstance(expected,str):expected=json.loads(expected)
             phases[phase].append(dict(row,expected=expected))
     reference_seconds=str(time.monotonic()-oracle_started)
@@ -160,4 +162,4 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         observations.append(store.observe(obj));accepted.add(row['measurement'])
     if measurements[0] not in accepted:raise ValueError('baseline failed measurement validation')
     memory_scope='conservative whole-process peak RSS including all candidates and adapter; not per-candidate heap'if planner.options.target=='javascript'else'no peak memory evidence'
-    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; average whole call and full result consumption; separate setup; '+memory_scope+'; no runtime probes')
+    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,reference_budget=reference_budget,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; average whole call and full result consumption; separate setup; '+memory_scope+'; no runtime probes')
