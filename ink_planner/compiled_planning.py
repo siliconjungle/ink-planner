@@ -516,7 +516,9 @@ def main():
                 selection['uncertainty_guard']=paired;selection['reason']=paired['reason'];selection['selected_measurement']=chosen
             if acquisition is not None and automatic_probe is not None:
                 from .measured_selection import choose
-                setup={r['measurement']:int(r.get('setup_ns',float(r.get('module_load_ms','0'))*1000000))for r in acquisition['acquisition'].get('module_load',[])}
+                setup={}
+                for row in acquisition['acquisition'].get('module_load',[]):
+                    setup.setdefault(row['measurement'],{})[row.get('process',0)]=int(row.get('setup_ns',float(row.get('module_load_ms','0'))*1000000))
                 chosen,guard=choose(acquisition['acquisition'],profile,measurements[0],controls,setup)
                 if chosen not in selection['total_ns']:chosen=measurements[0]
                 selection['uncertainty_guard']=guard

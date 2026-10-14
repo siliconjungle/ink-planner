@@ -43,7 +43,9 @@ class OfflineMeasurements(unittest.TestCase):
             Emitter.compiler=compiler
             workload=root/'workload.json';workload.write_text(json.dumps(dict(schema=1,phases={'call:run':[dict(function='run',args=[])]},profile={'call:run':1},workload=dict(shape={},distribution='controls',concurrency=1,residency='captured'))))
             baseline='a'*64;candidate='b'*64
-            target,shape,weights,receipt=acquire(Emitter(),store,[{'input_core_sha256':'c'*64}]*2,[{}]*2,[baseline,candidate],workload)
+            from ink_knowledge.selection_probes import policy
+            # Automatic controls must retain the configured process count too.
+            target,shape,weights,receipt=acquire(Emitter(),store,[{'input_core_sha256':'c'*64}]*2,[{}]*2,[baseline,candidate],workload,policy())
             self.assertEqual(receipt['acquisition']['processes'],3)
             self.assertEqual(receipt['reference_budget'],12345)
             self.assertEqual({row['measurement']for row in receipt['acquisition']['rows']},{baseline})

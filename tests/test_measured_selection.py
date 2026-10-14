@@ -51,6 +51,35 @@ class MeasuredSelection(unittest.TestCase):
         self.assertEqual(selected,'candidate')
         self.assertAlmostEqual(float(receipt['estimates']['candidate']['phases']['long']['candidate_over_baseline']),.6)
 
+    def test_fresh_processes_are_not_overwritten_by_the_last_winner(self):
+        rows=[]
+        for process,cost in enumerate([130,130,10]):
+            for plan,value in [('base',100),('candidate',cost)]:
+                rows.append(dict(measurement=plan,phase='call:run',process=process,complete_call_ns=[str(value)]*11))
+        selected,receipt=choose(dict(processes=3,rows=rows),{'call:run':1},'base',policy())
+        self.assertEqual(selected,'base')
+        estimate=receipt['estimates']['candidate']
+        self.assertAlmostEqual(float(estimate['candidate_over_baseline']),.9)
+        self.assertGreater(float(estimate['upper_bound']),1)
+        self.assertEqual(set(estimate['process_ratios']),{'0','1','2'})
+        self.assertEqual(choose(dict(processes=3,rows=list(reversed(rows))),{'call:run':1},'base',policy())[0],'base')
+
+    def test_process_setup_and_round_counts_preserve_each_launch(self):
+        rows=[]
+        for process in range(3):
+            for plan,cost in [('base',100),('candidate',60)]:
+                rows.append(dict(measurement=plan,phase='call:run',process=process,complete_call_ns=[str(cost)]*(9+process)))
+        report=dict(processes=3,rows=rows)
+        selected,receipt=choose(report,{'call:run':1},'base',policy())
+        self.assertEqual(selected,'candidate')
+        self.assertEqual(receipt['estimates']['candidate']['rounds_per_process'],{'0':9,'1':10,'2':11})
+        self.assertEqual(choose(report,{'call:run':1},'base',policy(),{'candidate':{0:1000,1:1000,2:0}})[0],'base')
+        self.assertEqual(choose(report,{'call:run':1},'base',policy(),{'candidate':{0:0,1:0}})[0],'base')
+        # Missing or duplicated rows cannot become extra independent evidence.
+        self.assertEqual(choose(dict(processes=3,rows=rows[:-1]),{'call:run':1},'base',policy())[0],'base')
+        self.assertEqual(choose(dict(processes=3,rows=rows+[rows[-1]]),{'call:run':1},'base',policy())[0],'base')
+        self.assertEqual(choose(dict(processes=3,rows=rows+[rows[0]]),{'call:run':1},'base',policy())[0],'base')
+
 
 class CandidateIdentity(unittest.TestCase):
     def test_many_cheap_variants_do_not_use_every_slot_before_a_distinct_family(self):

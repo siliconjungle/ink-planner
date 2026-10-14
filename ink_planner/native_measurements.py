@@ -46,8 +46,16 @@ def _measure(planner,artifacts,phases,controls,deadline):
     build_seconds=str(time.monotonic()-started)
     request=directory/'request.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=phases,measurement=controls),allow_nan=False))
     executable=Path(environment['CARGO_TARGET_DIR'])/'release/ink-offline-calls'
-    result=subprocess.run([str(executable),str(request)],capture_output=True,text=True,timeout=remaining())
-    if result.returncode:raise ValueError('native offline measurement failed: '+result.stderr[-2000:])
-    return json.loads(result.stdout),dict(build_seconds=build_seconds,lockfile_sha256=hashlib.sha256((directory/'Cargo.lock').read_bytes()).hexdigest(),
+    processes=controls['processes']if controls else getattr(planner.options,'measure_processes',3)
+    if type(processes)is not int or not 1<=processes<=8:raise ValueError('measurement process count')
+    reports=[]
+    for process in range(processes):
+        payload=json.loads(request.read_text());payload['process_index']=process
+        request.write_text(json.dumps(payload,allow_nan=False))
+        result=subprocess.run([str(executable),str(request)],capture_output=True,text=True,timeout=remaining())
+        if result.returncode:raise ValueError('native offline measurement failed: '+result.stderr[-2000:])
+        reports.append(json.loads(result.stdout))
+    from .process_measurements import combine
+    return combine(reports,artifacts),dict(build_seconds=build_seconds,lockfile_sha256=hashlib.sha256((directory/'Cargo.lock').read_bytes()).hexdigest(),
                                         executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
                                         scope='Exact dependency versions, offline build; existing generated JSON call and portable snapshot ABIs; no new host capability')

@@ -71,7 +71,9 @@ fn run()->Result<(),String> {
         }
     }
     if !valid.iter().any(|lane|lane.measurement==baseline){return Err("baseline failed independent validation".into())}
-    let mut rows=vec![];let mut seed=0x7193abefu32;let mut sink=0u64;
+    let process=match request.get("process_index"){None=>0,Some(value)=>value.as_u64().ok_or("bounded process index required")?};
+    if process>7{return Err("bounded process index required".into())}
+    let mut rows=vec![];let mut seed=0x7193abefu32^(process as u32).wrapping_mul(0x9e3779b9);let mut sink=0u64;
     for (phase,calls) in phases {
         let calls=calls.as_array().unwrap();let mut order:(Vec<usize>)=(0..valid.len()).collect();
         shuffle(&mut order,&mut seed);let mut counts=vec![0u64;valid.len()];

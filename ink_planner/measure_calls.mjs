@@ -10,7 +10,9 @@ const {artifacts,measurement={}}=request,phases=request.exact_transfer?unpackTra
 const rounds=measurement.rounds??11,minBatch=measurement.minimum_batch_ms??5,maxCalls=measurement.maximum_calls_per_sample??1024;
 if(!Number.isInteger(rounds)||rounds<9||rounds>64||!Number.isInteger(minBatch)||minBatch<1||minBatch>50||!Number.isInteger(maxCalls)||maxCalls<1||maxCalls>65536)throw Error('bounded measurement controls required');
 const rows=[],rejected=[],lanes=[];
-let sink=0,seed=0x7193abef;
+const processIndex=request.process_index??0;
+if(!Number.isInteger(processIndex)||processIndex<0||processIndex>7)throw Error('bounded process index required');
+let sink=0,seed=(0x7193abef^Math.imul(processIndex,0x9e3779b9))>>>0;
 const bits=new DataView(new ArrayBuffer(8));
 function consume(v){
  if(v===null||v===undefined)return 0;

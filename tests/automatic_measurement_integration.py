@@ -29,6 +29,11 @@ with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-'
     packet=json.loads(plan.read_text());receipt=json.loads(Path(str(plan)+'.receipt.json').read_text())
     assert receipt['automatic_probe']['calls'] and receipt['measurement_acquisition'],receipt
     shortlist=receipt['measurement_acquisition']['shortlist']
+    from ink_knowledge.selection_probes import policy
+    acquisition=receipt['measurement_acquisition']['acquisition']
+    assert acquisition['processes']==policy()['processes']==3,acquisition
+    assert {row['process']for row in acquisition['rows']}=={0,1,2},acquisition
+    assert all(e['processes']==3 for e in receipt['selection']['uncertainty_guard']['estimates'].values())
     assert shortlist['allocation']=='first admitted recipe ancestry before repeated family variants',shortlist
     assert set(shortlist['measured_families'])<=set(shortlist['admitted_families']),shortlist
     assert 'semantic-laws' in shortlist['measured_families'],shortlist

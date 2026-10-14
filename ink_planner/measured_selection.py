@@ -48,51 +48,75 @@ def shortlist(states,priority,limit,families=None):
     return list(dict.fromkeys(chosen+order))[:limit]
 
 def choose(report,profile,baseline,policy,setup_ns=None):
-    """Paired bootstrap over interleaved rounds, with a bounded comparison guard.
+    """Bootstrap fresh processes, then paired rounds within each process.
 
-    This is a profitability estimate for these inputs, not a mathematical fact
-    about arbitrary input distributions. Full source proof replay is separate.
+    Process means receive equal weight. This estimates profitability on these
+    inputs; repeated rounds are not additional independent process launches.
+    Full source proof replay remains separate.
     """
     rows={};excluded={};setup_ns=setup_ns or {}
+    process_count=report.get('processes',1)
+    if type(process_count)is not int or not 1<=process_count<=8:
+        return baseline,dict(reason='invalid measurement process count',excluded=excluded)
+    processes=list(range(process_count));phases=[p for p,n in profile.items()if n]
+    if not phases:return baseline,dict(reason='baseline lacks complete comparable phases',excluded=excluded)
     for row in report['rows']:
-        phase=row['phase'];plan=row['measurement'];samples=[int(x)for x in row['complete_call_ns']]
-        if phase not in profile or len(samples)<9 or any(x<=0 for x in samples):
+        phase=row['phase'];plan=row['measurement'];process=row.get('process',0)
+        samples=[int(x)for x in row['complete_call_ns']]
+        if phase not in phases or type(process)is not int or process not in processes or not 9<=len(samples)<=64 or any(x<=0 for x in samples):
             excluded[plan]='missing positive repeated comparable samples';continue
-        rows.setdefault(plan,{})[phase]=samples
-    phases=[p for p,n in profile.items()if n]
-    if baseline not in rows or set(phases)-set(rows[baseline]):
+        values=rows.setdefault(plan,{}).setdefault(process,{})
+        if phase in values:excluded[plan]='duplicate process/phase samples';continue
+        values[phase]=samples
+    def complete(values):
+        return set(values)==set(processes) and all(set(values[p])==set(phases) for p in processes)
+    if baseline in excluded or baseline not in rows or not complete(rows[baseline]):
         return baseline,dict(reason='baseline lacks complete comparable phases',excluded=excluded)
-    size=min(len(rows[baseline][p])for p in phases)
+    sizes={p:min(len(rows[baseline][p][phase])for phase in phases)for p in processes}
     costs={}
     for plan,values in rows.items():
-        if set(phases)-set(values) or any(len(values[p])!=len(rows[baseline][p])for p in phases):
+        if plan in excluded:continue
+        if not complete(values) or any(len(values[p][phase])!=len(rows[baseline][p][phase])for p in processes for phase in phases):
             excluded[plan]='missing paired lifecycle phases';continue
-        costs[plan]=[sum(values[p][i]*profile[p]for p in phases)+setup_ns.get(plan,0)for i in range(size)]
+        setup=setup_ns.get(plan,0)
+        if not isinstance(setup,dict):setup={p:setup for p in processes}
+        if set(setup)!=set(processes) or any(type(n)is not int or n<0 for n in setup.values()):
+            excluded[plan]='missing comparable process setup';continue
+        costs[plan]={p:[sum(values[p][phase][i]*profile[phase]for phase in phases)+setup[p] for i in range(sizes[p])]for p in processes}
     if baseline not in costs:return baseline,dict(reason='baseline lacks paired lifecycle samples',excluded=excluded)
     rng=random.Random(0x4d2a13);comparisons=max(1,len(costs)-1)
-    # Split the error budget between the overall gain gate and regression
-    # evidence across the measured phases. Neither is a universal timing proof.
     alpha=(100-policy['confidence_percent'])/100
     quantile=1-alpha/(2*comparisons)
     lower_quantile=alpha/(2*comparisons*len(phases))
-    resamples=[[rng.randrange(size)for _ in range(size)]for _ in range(policy['bootstrap_repetitions'])]
+    resamples=[]
+    for _ in range(policy['bootstrap_repetitions']):
+        draw=[]
+        for _ in processes:
+            p=rng.randrange(process_count)if process_count>1 else 0
+            draw.append((p,[rng.randrange(sizes[p])for _ in range(sizes[p])]))
+        resamples.append(draw)
+    def draws(paired):
+        return sorted(sum(sum(paired[p][i]for i in indices)/len(indices)for p,indices in draw)/process_count for draw in resamples)
+    def mean(paired):return sum(sum(paired[p])/len(paired[p])for p in processes)/process_count
     estimates={};eligible=[];margin=1-policy['minimum_gain_percent']/100
     regression_limit=1+policy['maximum_phase_regression_percent']/100
     base=costs[baseline]
     for plan,values in costs.items():
         if plan==baseline:continue
-        paired=[a/b for a,b in zip(values,base)]
-        draws=sorted(sum(paired[i]for i in indices)/size for indices in resamples)
-        upper=draws[min(len(draws)-1,math.ceil(quantile*len(draws))-1)]
-        ratio=sum(paired)/size
-        phase_estimates={};regressions=[]
+        paired={p:[a/b for a,b in zip(values[p],base[p])]for p in processes}
+        distribution=draws(paired)
+        upper=distribution[min(len(distribution)-1,math.ceil(quantile*len(distribution))-1)]
+        ratio=mean(paired);phase_estimates={};regressions=[]
         for phase in phases:
-            paired_phase=[a/b for a,b in zip(rows[plan][phase],rows[baseline][phase])][:size]
-            phase_draws=sorted(sum(paired_phase[i]for i in indices)/size for indices in resamples)
-            lower=phase_draws[min(len(phase_draws)-1,math.floor(lower_quantile*len(phase_draws)))]
-            phase_estimates[phase]=dict(candidate_over_baseline=str(sum(paired_phase)/size),lower_bound=str(lower))
+            paired_phase={p:[a/b for a,b in zip(rows[plan][p][phase],rows[baseline][p][phase])][:sizes[p]]for p in processes}
+            distribution=draws(paired_phase)
+            lower=distribution[min(len(distribution)-1,math.floor(lower_quantile*len(distribution)))]
+            phase_estimates[phase]=dict(candidate_over_baseline=str(mean(paired_phase)),lower_bound=str(lower),
+                process_ratios={str(p):str(sum(v)/len(v))for p,v in paired_phase.items()})
             if lower>regression_limit:regressions.append(phase)
-        estimates[plan]=dict(candidate_over_baseline=str(ratio),upper_bound=str(upper),comparisons=comparisons,rounds=size,
+        estimates[plan]=dict(candidate_over_baseline=str(ratio),upper_bound=str(upper),comparisons=comparisons,
+                            processes=process_count,rounds_per_process={str(p):sizes[p]for p in processes},
+                            process_ratios={str(p):str(sum(v)/len(v))for p,v in paired.items()},
                             phases=phase_estimates,regressive_phases=regressions)
         if regressions:excluded[plan]='demonstrated complete-call regression in measured phase'
         elif upper<margin:eligible.append((ratio,plan))
@@ -100,4 +124,4 @@ def choose(report,profile,baseline,policy,setup_ns=None):
     selected=min(eligible)[1]if eligible else baseline
     return selected,dict(reason='paired complete-lifecycle improvement on selection inputs'if selected!=baseline else'baseline retained; no robust measured lifecycle improvement',
                          baseline_comparable=True,estimates=estimates,excluded=excluded,policy_sha256=identity(policy),
-                         scope='Synthetic probes or supplied development calls; workload-specific profitability only. Phase checks exclude demonstrated call regressions, not all possible losses; setup remains in the total lifecycle gate. Proofs and target eligibility replay independently')
+                         scope='Synthetic probes or supplied development calls; workload-specific profitability only. Hierarchical process/paired-round bootstrap; phase checks exclude demonstrated call regressions, not all possible losses. Per-process setup remains in the total lifecycle gate. Proofs and target eligibility replay independently')

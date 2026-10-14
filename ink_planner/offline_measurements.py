@@ -130,19 +130,17 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     if planner.options.target=='javascript':
         from .value_transfer import transfer
         request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=transfer(phases),measurement=controls,exact_transfer=True),allow_nan=False))
-        processes=1 if controls else getattr(planner.options,'measure_processes',3)
+        processes=controls['processes'] if controls else getattr(planner.options,'measure_processes',3)
         if type(processes) is not int or not 1<=processes<=8:raise ValueError('measurement process count')
         reports=[]
         for process in range(processes):
+            payload=json.loads(request.read_text());payload['process_index']=process
+            request.write_text(json.dumps(payload,allow_nan=False))
             result=subprocess.run([shutil.which('node'),'--max-old-space-size='+str(max(32,min(4096,getattr(planner.options,'memory_bytes',512000000)//1000000))),str(RUNNER),str(request)],capture_output=True,text=True,timeout=remaining())
             if result.returncode:raise ValueError('offline measurement failed: '+result.stderr[-2000:])
             reports.append(json.loads(result.stdout))
-        accepted_everywhere={a['measurement']for a in artifacts}
-        for report in reports:accepted_everywhere&={row['measurement']for row in report['rows']}
-        fingerprints=reports[0]['input_fingerprints']
-        if any(r['input_fingerprints']!=fingerprints for r in reports):raise ValueError('measurement normalized inputs changed across processes')
-        report=dict(schema=1,processes=processes,rows=[dict(row,process=index)for index,r in enumerate(reports)for row in r['rows']if row['measurement']in accepted_everywhere],
-                    input_fingerprints=fingerprints,rejected=[row for r in reports for row in r['rejected']],module_load=[dict(row,process=index)for index,r in enumerate(reports)for row in r['module_load']])
+        from .process_measurements import combine
+        report=combine(reports,artifacts,fingerprints=True)
     else:
         from .native_measurements import measure
         report,native_build=measure(planner,artifacts,phases,controls,deadline)

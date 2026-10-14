@@ -425,3 +425,11 @@ regression checks. Noisy or unmeasured losses remain possible; these estimates
 never grant semantic authority. Setup stays in the total lifecycle objective,
 while phase checks use complete call costs. Size-stratified synthetic probes keep
 small calls visible instead of averaging them into a large-input-dominated phase.
+
+JavaScript and Rust automatic selection retain all configured fresh processes. Selection
+resamples processes and then paired rounds within each chosen process, weighting
+process means equally rather than treating repeated rounds as independent
+launches. Import/setup costs stay paired with their process. Missing or duplicate
+process/phase rows cannot authorise selection. Three processes improve coverage
+of process variation but do not establish calibrated confidence or universal
+absence of regressions.
