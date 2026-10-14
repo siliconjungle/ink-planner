@@ -39,9 +39,9 @@ def main():
   run(['node',B/'knowledge/producers/target_work40_js.mjs',artifact,instrumented,instrumentation,parser])
   run(['node',B/'knowledge/producers/target_work40_replay.mjs',artifact,instrumented,instrumentation,fixture,trace])
   cohort=dict(target='javascript',host=dict(engine='node',version=run(['node','--version']).stdout.strip()),boundary='owned',emitter_sha256=file_hash(compiler),entry_abi='ink-javascript-trusted-values-v2')
-  paths=dict(original_core=input_core,selected_core=core,selection=selection,artifact=artifact,fixture=fixture,instrumenter=B/'knowledge/producers/target_work40_js.mjs',instrumented=instrumented,instrumentation=instrumentation,runner=B/'knowledge/producers/target_work40_replay.mjs',trace=trace)
+  paths=dict(original_core=input_core,selected_core=core,selection=selection,artifact=artifact,fixture=fixture,instrumenter=B/'knowledge/producers/target_work40_js.mjs',instrumented=instrumented,instrumentation=instrumentation,parser=parser,runner=B/'knowledge/producers/target_work40_replay.mjs',trace=trace)
   rows=produce(directory/'sidecars',paths,cohort)
-  features=next(Path(x['path'])for x in rows if x['fixture_id']=='33-7-owned');load_observation(features)
+  features=next(Path(x['path'])for x in rows if x['fixture_id']=='33-7-owned');cohort=load_observation(features)['cohort']
   candidates.append(dict(id=variant,selection=str(selection),selected_core=str(core),artifact=str(artifact),features=str(features)))
  model=dict(schema=1,kind='ink-target-work-prices-v1',cohort=cohort,weights=dict(invocations=1,loop_iterations=1,allocation_events=1,copy_bytes=1),training=dict(protocol_sha256='0'*64,observations_sha256='0'*64,scope='Synthetic interface test weights; not calibrated and no performance claim'))
  (r/'model.json').write_text(json.dumps(model)+'\n');index=r/'candidates.json';index.write_text(json.dumps(candidates)+'\n')

@@ -45,21 +45,23 @@ measurement. JavaScript allocation events count completed emitted array carrier
 construction operations, not V8 allocator calls, storage bytes or internal
 capacity growth. Typed explicit copies have known byte extents; ordinary Array
 slice bytes and opaque/custom method traversal remain unknown. Standard native
-map/filter callbacks are observed with their original this/arguments and sparse
-entry visitation; reflection-sensitive arbitrary JavaScript is outside this
-diagnostic pure generated-code domain. Native C uses
-Clang's source-bound AST and counts the existing emitted `ink_alloc` request and
-`ink_copy` byte-request ABI, never inferred copies for scalar stores or allocator
-internals. Those primitive definitions are themselves source-bound. C counts
-are not assigned to Rust or Wasm. Instrumented artifacts are diagnostic copies;
+map/filter, reduction, short-circuit search and explicit sort/factory callbacks
+are observed with their original this/arguments and actual entry visitation.
+Array and typed-array factories count completed carrier construction. Default
+sorting and factories without observable callbacks mark traversal unknown; no
+iteration count is inferred from output length. Same-type typed-array `from`
+without a mapper records explicit payload copies; conversion and Array bytes
+remain unknown; reflection-sensitive arbitrary JavaScript is outside this
+diagnostic pure generated-code domain. Archived C observations are not acquisition support for current backends. Instrumented artifacts are diagnostic copies;
 original target files and production APIs receive no wrapper or caller checks.
 
 The JavaScript producer preserves receiver/property/argument evaluation once and
-method `this` binding. Unsupported overlapping receiver edits fail closed.
+method `this` binding. Recursive AST rendering preserves nested receiver and argument instrumentation,
+including chained factories, parentheses, spread arguments and lexical await.
+Unsupported optional/super operations remain explicitly unknown.
 Counters reset before each untimed oracle invocation. Original and instrumented
 complete outputs, input nonmutation, destination count/tail, and prior returned
-values are compared. C replay supports the declared two-list/U32 scalar ABI;
-module arena reset after complete consumption is included. Caller ingress,
+values are compared. Caller ingress,
 readback/consumer loops and setup must be separately acquired and bound before
 pricing a benchmark boundary that includes them. Rust physical acquisition is
 currently unavailable. Actual GPU host phase counters can be represented, while
@@ -137,3 +139,16 @@ with a separate diagnostic definition dependency. Acquisition limitations and
 poor heldout results therefore remain attached to prices rather than only in an
 external narrative. The context grants no proof, application or default-selection
 authority. Frozen model and prediction bytes remain intact.
+
+New sidecars include an `acquisition` map in their cohort, binding the exact
+instrumenter, runner, parser and any boundary extraction/adapter sources. The
+consumer checks these against authenticated bindings; price cohorts compare
+them exactly. A collector change therefore cannot reuse prices trained on old
+feature definitions. Historical observations without this map remain comparable
+only to their historical cohorts, never newly produced observations. Fit prices
+from the observation's emitted cohort rather than reconstructing it from labels.
+
+Sidecar trace parsing and hashing use one bounded byte snapshot. Other provenance
+files are hashed incrementally; later changes are still rejected on consumption.
+Install the diagnostic parser reproducibly with
+`npm ci --prefix knowledge/tools/js-instrumentation --ignore-scripts`.

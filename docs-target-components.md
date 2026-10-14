@@ -56,6 +56,16 @@ use a componentwise maximum of their arms; known boolean branches and boolean
 short-circuiting avoid the inactive arm. The componentwise maximum is an upper
 shape estimate and may combine costs from different mutually exclusive arms.
 
+`foldr` and `foldl` bind the callback's element to the receiver element type and
+start its accumulator from the actual initial abstract value. Collection results
+retain that value's shape rather than assuming the input length. The analysis
+tracks up to 64 accumulator transitions and scales remaining work only after an
+abstract fixed point; it does not infer growth from sample values. Unstable
+accumulators or exhausted analysis budgets report unknown work and an unresolved
+output extent. Empty folds return their initial value, and empty maps never
+execute callback work. This remains a source-shape estimate: element values,
+order-dependent costs and physical allocation reuse are not measured.
+
 Each entry counts one `invocations` event, regardless of how many source helpers
 are expanded. Collection loops count traversal and expanded callback work.
 `loop_body_pressure` is extent times the square of callback scalar/div-rem/branch

@@ -1,6 +1,8 @@
 """Source costs remain untrusted; actual signatures/binders drive estimates."""
 import copy
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -31,6 +33,66 @@ def model(**changes):
     return TargetCostModel(data)
 
 class TargetComponentTests(unittest.TestCase):
+    def test_generic_fold_keeps_initial_accumulator_and_tracks_growth(self):
+        lb={'Value':{'List':'Bool'}}
+        p=program(signature('entry',[['flags',{'List':'Bool'}],['seed',{'List':'U32'}],['ys',{'List':'U32'}]],{'List':'U32'}))
+        m=model(cardinality=dict(default=4,by_parameter={'seed':3,'ys':2}))
+        callback=lam(lam(bound(0,L),L),B)
+        for name in ['call:foldr','call:foldl']:
+            preserve=op(name,free('flags',lb),free('seed',L),callback,sort=L)
+            r=m.estimate_function('entry',{'entry':preserve},p)
+            self.assertTrue(r['complete']);self.assertEqual(r['components']['copy_bytes'],12)
+            self.assertEqual(r['components']['traversal_elements'],4)
+            grow=op(name,free('flags',lb),free('seed',L),lam(lam(op('method:concat',bound(0,L),free('ys',L),sort=L),L),B),sort=L)
+            r=m.estimate_function('entry',{'entry':grow},p)
+            self.assertTrue(r['complete']);self.assertEqual(r['components']['allocation_events'],4)
+            self.assertEqual(r['components']['allocation_bytes'],128)
+            self.assertEqual(r['components']['copy_bytes'],128)
+            self.assertEqual(r['components']['traversal_elements'],36)
+
+    def test_fold_fixed_points_are_bounded_and_growth_does_not_fake_completeness(self):
+        p=program(signature('entry',[['xs',{'List':'U32'}]]))
+        body=op('call:foldr',free('xs',L),word(0),lam(lam(op('binary:+',bound(1),bound()))))
+        r=model(cardinality=dict(default=10**9,by_parameter={})).estimate_function('entry',{'entry':body},p)
+        self.assertTrue(r['complete']);self.assertEqual(r['components']['scalar_ops'],10**9)
+        self.assertEqual(r['components']['traversal_elements'],10**9)
+        grow=op('call:foldr',free('xs',L),term(L,'Nil'),lam(lam(term(L,{'Cons':[bound(1),bound(0,L)]}),L)),sort=L)
+        p=program(signature('entry',[['xs',{'List':'U32'}]],{'List':'U32'}))
+        r=model(cardinality=dict(default=1000,by_parameter={})).estimate_function('entry',{'entry':grow},p)
+        self.assertFalse(r['complete']);self.assertGreater(r['components']['unknown_work'],0)
+        self.assertTrue(any('accumulator did not stabilize' in s for s in r['unknown_reasons']))
+
+    def test_empty_folds_and_maps_do_not_execute_unreachable_callbacks(self):
+        p=program(signature('entry',[['seed',{'List':'U32'}]],{'List':'U32'}))
+        m=model(cardinality=dict(default=3,by_parameter={}))
+        unsupported=op('method:sort',bound(0,L),sort=L)
+        body=op('call:foldr',term(L,'Nil'),free('seed',L),lam(lam(unsupported,L)),sort=L)
+        r=m.estimate_function('entry',{'entry':body},p)
+        self.assertTrue(r['complete']);self.assertEqual(r['components']['traversal_elements'],0)
+        self.assertEqual(r['components']['copy_bytes'],12)
+        body=mapped(term(L,'Nil'),op('call:unsupported',bound()))
+        r=m.estimate_function('entry',{'entry':body},p)
+        self.assertTrue(r['complete']);self.assertEqual(r['components']['unknown_work'],0)
+
+    def test_actual_compiler_generic_fold_subject_has_matching_collection_costs(self):
+        compiler=Path(os.environ.get('INK_COMPILER',ROOT/'target/debug/ink')).resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);source=root/'fold.ink';core=root/'core.json';semantic=root/'semantic.json'
+            source.write_text('module FoldCosts;'+''.join(
+                f'fn {name}(flags:List<Bool>,seed:List<u32>,ys:List<u32>)->List<u32>{{return {fold}(flags,seed,fn(flag)=>fn(acc)=>acc.concat(ys));}}'
+                for name,fold in [('grow','foldr'),('grow_left','foldl')]))
+            for args in [('emit-core',source,'-o',core),('emit-semantic',core,'--core','-o',semantic)]:
+                run=subprocess.run([str(compiler),*map(str,args)],capture_output=True,text=True,timeout=60)
+                self.assertEqual(run.returncode,0,run.stderr)
+            bodies=json.loads(semantic.read_text())['functions'];p=json.loads(core.read_text())['program']
+            m=model(cardinality=dict(default=4,by_parameter={'seed':3,'ys':2}))
+            for name in ['grow','grow_left']:
+                r=m.estimate_function(name,bodies,p)
+                self.assertTrue(r['complete'],r['unknown_reasons'])
+                self.assertEqual(r['components']['allocation_events'],4)
+                self.assertEqual(r['components']['allocation_bytes'],128)
+                self.assertEqual(r['components']['traversal_elements'],36)
+
     def test_schema_finite_prices_and_cardinality_types(self):
         data = model().describe()
         data.pop('scope'); data.pop('units')

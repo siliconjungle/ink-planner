@@ -2,6 +2,7 @@
 import json,math,statistics
 from ink_knowledge.cost_models import publish_model,load_model
 from ink_knowledge.store import Store,read,identity,hash_id
+from .joint_domain import derive
 FEATURES=('input_elements','input_bytes','output_capacity_elements','dispatches','iterations')
 
 
@@ -9,10 +10,10 @@ def fit(store,rows,target_key,basis=None):
     """Rows bind an immutable observation to exact compiled scope and boundary.
 
     Features are measured workload provenance, never sampled application values.
-    Per-feature bounds restrict each input range; they do not prevent joint
-    extrapolation between correlated features. Coefficients remain hypotheses.
+    Exact joint convex support restricts prediction to observed combinations and
+    their interpolations. This does not establish timing accuracy or confidence.
     """
-    if not isinstance(target_key,str)or not target_key or not isinstance(rows,list)or not rows or len(rows)>4096:raise ValueError('invalid fitting request')
+    if not isinstance(target_key,str)or not 1<=len(target_key)<=4096 or not isinstance(rows,list)or not rows or len(rows)>4096:raise ValueError('invalid fitting request')
     if basis is None:
         from importlib.resources import files
         basis=json.loads(files('ink_knowledge').joinpath('cost-model-basis.json').read_bytes())['products']
@@ -47,6 +48,7 @@ def fit(store,rows,target_key,basis=None):
         groups.setdefault(key,[]).append((features,statistics.median(int(n)for n in observation['metrics']['complete_call_ns'])))
         refs.append(id)
     models={}
+    if len({scope for scope,_,_ in groups})>256:raise ValueError('profile model budget')
     for(scope,boundary,backend),points in sorted(groups.items()):
         names=sorted(points[0][0])
         if any(sorted(f)!=names for f,_ in points):raise ValueError('incomparable feature schemas')
@@ -73,8 +75,11 @@ def fit(store,rows,target_key,basis=None):
             if set(model['domains'])!=set(domain):raise ValueError('incomparable backend features')
             domain={n:[max(model['domains'][n][0],d[0]),min(model['domains'][n][1],d[1])]for n,d in domain.items()}
             if any(lo>hi for lo,hi in domain.values()):raise ValueError('backend observation domains do not overlap')
-        model['domains']=domain;model['backends'][backend]=dict(intercept_ns=weights[0],terms=terms,**({'products':product_terms}if product_terms else{}))
-    profile=dict(schema=2 if any(p.get('products')for m in models.values()for p in m['backends'].values())else 1,target_key=target_key,models=models)
+        model['domains']=domain;model['backends'][backend]=dict(intercept_ns=weights[0],terms=terms,
+            support=derive(names,[features for features,_ in points]),
+            **({'products':product_terms}if product_terms else{}))
+    profile=dict(schema=3,target_key=target_key,models=models)
+    if len(json.dumps(profile,separators=(',',':')).encode())>4_000_000:raise ValueError('profile byte budget')
     id=publish_model(store,profile,refs);return id,load_model(store,id)
 
 
