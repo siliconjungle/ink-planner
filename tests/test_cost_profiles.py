@@ -67,10 +67,11 @@ class ProductCosts(unittest.TestCase):
       observation=dict(schema=1,program='0'*64,entries=[],plan='1'*64,target=dict(hardware='fixture',driver='fixture',toolchain='fixture',backend=backend,bridge='packed-v1'),workload=dict(shape={'features':{'input_elements':n,'iterations':k}},distribution='session-fixture',concurrency=1,residency='captured-owned'),metrics=dict(complete_call_ns=[str(start+rate*n*k)]*3,peak_bytes=None))
       rows.append(dict(scope='resident-fixture',observation=st.observe(observation)))
    _,profile=fit(st,rows,'fixture-target')
-   self.assertEqual(profile['schema'],2)
+   self.assertEqual(profile['schema'],3)
    model=profile['models']['resident-fixture']
    for backend,start,rate in [('cpu',100,10),('gpu',10000,1)]:
     p=model['backends'][backend];self.assertEqual(p['products'][0]['features'],['input_elements','iterations'])
+    self.assertEqual(p['support']['features'],['input_elements','iterations'])
     # Independent interior points; no held-out observations used for fitting.
     for n,k in [(64,8),(512,32)]:
      predicted=p['intercept_ns']+sum(p['terms'][f]*v for f,v in [('input_elements',n),('iterations',k)])+p['products'][0]['coefficient_ns']*n*k
