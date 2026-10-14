@@ -78,6 +78,19 @@ class RecipeStreams(unittest.TestCase):
             events=list(run(jobs,2,time.monotonic()+3,.15))
             self.assertEqual(events[0][1]['reason'],'proposal process time budget')
             self.assertIn(('1',b'later'),[(j['key'],e.get('raw'))for j,e in events])
+    def test_first_result_releases_priority_barrier_before_slow_variants(self):
+        with tempfile.TemporaryDirectory()as tmp:
+            jobs=self.jobs(Path(tmp),[
+                "import sys,time;f=open(sys.argv[1],'w');f.write('header\\nproposal\\n');f.flush();time.sleep(30)",
+                "import sys;open(sys.argv[1],'w').write('header\\nlater\\n')"])
+            jobs[0]['recipe']={'priority':-10}
+            stream=run(jobs,2,time.monotonic()+5,3)
+            try:
+                for job,event in stream:
+                    self.assertFalse(job['key']=='0'and event['kind']=='done')
+                    if event.get('raw')==b'later':break
+                else:self.fail('later family never ran')
+            finally:stream.close()
     def test_priority_groups_preserve_stage_round_robin(self):
         from ink_planner.recipe_streams import interleave_stages
         jobs=[dict(key=str(i),recipe=dict(stage=stage,priority=level))for i,(stage,level)in enumerate([

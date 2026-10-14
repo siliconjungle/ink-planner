@@ -358,8 +358,9 @@ Recursive compilation now limits proof attempts from each parent state before
 expanding its admitted children: quick/balanced/thorough use 8/32/128 attempts.
 `--expansion-limit 0` reproduces exhaustive parent enumeration for comparison.
 Recipes may publish an integer `priority` from -100 to 100 (default zero).
-Lower priorities finish before later groups launch; stages still interleave
-within each group. Process and overall deadlines remain in force. This lets an
+Lower priorities emit their first result (or finish) before later groups launch;
+stages still interleave within each group. Remaining variants run alongside the
+later groups. Process and overall deadlines remain in force. This lets an
 expensive proof author run before quick families consume the parent's budget.
 Priority grants neither proof admission nor profitability and cannot force
 selection. The installed maintained-fold recipe currently has priority -10.

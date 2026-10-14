@@ -68,10 +68,10 @@ def run(jobs,workers,deadline,timeout,byte_limit=128_000_000):
         while pending or active:
             if time.monotonic()>=deadline:break
             while pending and len(active)<workers:
-                # Finish earlier priorities before a fast later family can spend
-                # the consumer's entire expansion budget. This affects search
-                # order only; all proposals still need independent admission.
-                if active and priority(pending[0])>priority(active[0]['job']):break
+                # Give earlier priorities their first result after the header,
+                # then let other families run alongside remaining variants.
+                # A slow variant must not monopolise the overall time budget.
+                if any(priority(pending[0])>priority(s['job'])and s['rows']<2 for s in active):break
                 active.append(launch(pending.popleft()))
             progress=False
             for state in list(active):

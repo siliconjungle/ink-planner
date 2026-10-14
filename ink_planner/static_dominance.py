@@ -2,8 +2,9 @@
 
 This is the one exception to evidence-gated selection. A checked maintained
 group fold (`ink-maintained-fold-v1`) adds a constant amount of work to each
-cell write of its table, and turns every read of its keep from a scan of all
-rows into a constant-time read. A checked word extremum view adds one ordered
+cell write of its table, and turns reads after initialization from a scan of all
+rows into a constant-time read. Ordinary JavaScript plans initialize each view
+on its first read, avoiding contribution work for unread views. A checked word extremum view adds one ordered
 multiset update to each write, logarithmic like the ordered table write itself,
 and turns every read into a logarithmic one. No workload makes such a plan
 asymptotically worse than the baseline, so ordinary compilation selects it when
@@ -12,7 +13,7 @@ other step kind, and any plan mixing one in, remains evidence-gated.
 """
 
 DOMINANT_KINDS = frozenset({'maintained'})
-REASON = 'static dominance: checked maintained folds (no asymptotic cost per write, keep reads without table scans)'
+REASON = 'static dominance: checked maintained folds (no asymptotic cost per write, cached keep reads after initialization)'
 
 
 def dominant(package):
