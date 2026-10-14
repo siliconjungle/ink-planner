@@ -1,4 +1,5 @@
 import os
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ class PrivateKnowledgeCopy(unittest.TestCase):
             immutable = root / 'store' / 'objects' / 'a.json'
             immutable.write_text('{}\n')
             (root / 'index-published.json').write_text('{"published":[]}\n')
-            with sqlite3.connect(root / 'index.sqlite') as db:
+            with closing(sqlite3.connect(root / 'index.sqlite')) as db, db:
                 db.execute('create table seen(id text)')
             scratch = Path(directory) / 'scratch'
             private_copy(root, scratch)
@@ -24,9 +25,9 @@ class PrivateKnowledgeCopy(unittest.TestCase):
             for name in ['index.sqlite', 'index-published.json']:
                 self.assertNotEqual(os.stat(root / name).st_ino, os.stat(scratch / name).st_ino, name)
             # A private evaluation writing its index leaves the shared one unchanged.
-            with sqlite3.connect(scratch / 'index.sqlite') as db:
+            with closing(sqlite3.connect(scratch / 'index.sqlite')) as db, db:
                 db.execute("insert into seen values ('private observation')")
-            with sqlite3.connect(root / 'index.sqlite') as db:
+            with closing(sqlite3.connect(root / 'index.sqlite')) as db, db:
                 self.assertEqual(db.execute('select count(*) from seen').fetchone()[0], 0)
 
 
