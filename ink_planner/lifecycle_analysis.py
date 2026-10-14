@@ -53,11 +53,12 @@ def analyze(data, max_switches=32):
         if not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest):
             raise ValueError('replay prefix identity')
         costs.append({v:price(w['costs_ns'][v]) for v in ids})
-        e = {}
+        e = {}; seen=set()
         for m in w['migrations']:
             key=(m['from'],m['to'])
-            if key[0] not in ids or key[1] not in ids or key[0]==key[1] or key in e:
+            if key[0] not in ids or key[1] not in ids or key[0]==key[1] or key in seen:
                 raise ValueError('migration endpoints')
+            seen.add(key)
             cost=price(m['samples_ns'])
             if limits is not None:
                 peak=m['peak_bytes']
@@ -87,7 +88,7 @@ def analyze(data, max_switches=32):
         key=back[key];schedule.append(key[0])
     schedule.reverse()
     def schedule_cost(schedule):
-        if len(schedule)!=len(windows) or any(v not in ids for v in schedule):
+        if len(schedule)!=len(windows) or any(v not in allowed for v in schedule):
             raise ValueError('schedule coverage')
         value=setup[schedule[0]]+sum(c[v] for c,v in zip(costs,schedule))
         for t in range(1,len(schedule)):

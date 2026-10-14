@@ -24,6 +24,8 @@ class LifecycleAnalysis(unittest.TestCase):
    for m in w['migrations']:m['peak_bytes']=90
   r=analyze(d);self.assertEqual(r['hindsight_switches'],0)
   d['limits']['memory_limit_bytes']=60;r=analyze(d);self.assertEqual(r['best_fixed'],'a');self.assertEqual(r['hindsight_schedule'],['a']*4)
+  d['windows'][0]['migrations'].append(d['windows'][0]['migrations'][0])
+  with self.assertRaises(ValueError):analyze(d)
  def test_real_controller_residual_and_invalid_data(self):
   d=self.fixture();d['controller']=dict(schedule=['a']*4,elapsed_ns=[30]*3)
   r=analyze(d);self.assertEqual(r['controller_replay_ns'],24);self.assertEqual(r['execution_residual_ns'],6)

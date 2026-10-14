@@ -344,3 +344,10 @@ customer behaviour. Discovered observed profiles retain precedence. The
 database's boundary-readers recipe supplies implementation choices; no recipe
 dispatch or JSON recognition is added to the planner. Holdouts must contain new
 semantic inputs; switching the same value to another transport is insufficient.
+
+`python -m ink_planner.lifecycle_analysis replay.json -o analysis.json` performs
+bounded offline hindsight analysis of comparable state-history windows. It
+compares fixed choices and migration-charged schedules, optionally enforcing
+measured memory/pause budgets. Counterfactual windows require the same logical
+prefix and at least three measurements per variant. Hindsight, choice gaps and
+execution residuals are diagnostics, never a runtime policy or proof premise.
