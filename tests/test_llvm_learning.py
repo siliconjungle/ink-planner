@@ -78,6 +78,21 @@ class LLVMBridge(unittest.TestCase):
             for _,candidate in alternatives:
                 checked_law(compiler,core,dict(params=parameters(bounded),conditions=[],
                             **{'from':bounded,'to':candidate}),d,seconds=authoring_seconds)
+            # Branch-derived facts are never external assumptions. Prove the
+            # entire guarded replacement and reject removing the guard's scope.
+            for kind in ('U32','U64'):
+                s=value(kind);x=var(s,'x')
+                guard=op(value('Bool'),'binary:<',x,word(kind,256))
+                masked=op(s,'call:word_and',x,word(kind,255))
+                guarded=op(s,'call:choose',guard,masked,x)
+                alternatives,_=discover_facts(guarded)
+                self.assertIn(('branch-scoped-facts',x),alternatives)
+                checked_law(compiler,core,dict(params=parameters(guarded),conditions=[],
+                            **{'from':guarded,'to':x}),d,seconds=authoring_seconds)
+                outside=op(s,'call:choose',guard,x,masked)
+                with self.assertRaisesRegex(ValueError,'counterexample'):
+                    checked_law(compiler,core,dict(params=parameters(outside),conditions=[],
+                                **{'from':outside,'to':x}),d,seconds=authoring_seconds)
             # Facts remain suggestions: replay correlated arithmetic and
             # modulo-count shift consequences through the ordinary checker.
             for kind in ('U32','U64'):
