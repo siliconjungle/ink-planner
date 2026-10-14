@@ -13,6 +13,7 @@ COMPONENTS = ('invocations', 'loop_iterations', 'allocation_events', 'copy_bytes
 BINDINGS = ('original_core', 'selected_core', 'selection', 'artifact', 'fixture',
             'instrumenter', 'instrumented', 'instrumentation', 'runner', 'trace')
 BOUNDARY_BINDINGS = ('boundary_runner', 'boundary_extractor', 'boundary_adapter', 'boundary_instrumented', 'boundary_instrumentation', 'boundary_receipt')
+ACQUISITION_BINDINGS = ('instrumenter', 'runner', 'parser', 'boundary_runner', 'boundary_extractor', 'boundary_adapter')
 MAX_COUNT = 10**15
 
 
@@ -41,8 +42,13 @@ def _digest(value):
 
 
 def cohort(value):
-    if not isinstance(value, dict) or set(value) != {'target', 'host', 'boundary', 'emitter_sha256', 'entry_abi'}:
+    required = {'target', 'host', 'boundary', 'emitter_sha256', 'entry_abi'}
+    if not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'acquisition'}:
         raise ValueError('physical cohort fields')
+    if 'acquisition' in value:
+        acquisition = value['acquisition']
+        if not isinstance(acquisition, dict) or not {'instrumenter', 'runner'} <= set(acquisition) or set(acquisition) - set(ACQUISITION_BINDINGS) or not all(_digest(v) for v in acquisition.values()):
+            raise ValueError('physical acquisition cohort')
     if not _digest(value['emitter_sha256']):
         raise ValueError('physical emitter binding')
     for key in ('target', 'boundary', 'entry_abi'):
@@ -75,7 +81,7 @@ class PhysicalPrices:
 
     def score(self, observation):
         if observation['cohort'] != self.cohort:
-            return None, 'target/host/boundary/emitter/ABI cohort mismatch'
+            return None, 'target/host/boundary/emitter/ABI/acquisition cohort mismatch'
         missing = [k for k in self.weights if not observation['known'][k]]
         if missing:
             return None, 'unknown required emitted work: ' + ','.join(sorted(missing))
@@ -111,6 +117,8 @@ def load_observation(path, expected_bindings=None):
             if not isinstance(document, dict):
                 raise ValueError('physical metadata object required: ' + name)
             documents[name] = document
+    if 'acquisition' in data['cohort'] and data['cohort']['acquisition'] != {name: bindings[name]['sha256'] for name in ACQUISITION_BINDINGS if name in bindings}:
+        raise ValueError('physical acquisition bindings mismatch')
     for name, expected in (expected_bindings or {}).items():
         if name not in bindings or bindings[name]['sha256'] != file_hash(expected):
             raise ValueError('candidate physical binding mismatch: ' + name)
@@ -134,6 +142,8 @@ def load_observation(path, expected_bindings=None):
     if len(matches) != 1 or any(matches[0].get(k) != data[k] for k in ('components', 'known', 'unknown')):
         raise ValueError('physical trace vector mismatch')
     instrumentation = documents['instrumentation']
+    if 'acquisition' in data['cohort'] and 'parser_sha256' in instrumentation and 'parser' not in bindings:
+        raise ValueError('physical parser binding missing from acquisition')
     if instrumentation.get('artifact_sha256') != bindings['artifact']['sha256'] or instrumentation.get('instrumented_sha256') != bindings['instrumented']['sha256'] or instrumentation.get('instrumenter_sha256') != bindings['instrumenter']['sha256']:
         raise ValueError('physical instrumenter binding')
     if 'parser' in bindings and instrumentation.get('parser_sha256') != bindings['parser']['sha256']:

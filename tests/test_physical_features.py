@@ -17,6 +17,32 @@ def observation(n=10):
     return dict(cohort=cohort(),entry='entry',fixture_id='fixture',components={k:n if k=='loop_iterations'else 1 if k in('invocations','allocation_events')else 0 for k in COMPONENTS},known={k:True for k in COMPONENTS},bindings={k:dict(sha256='4'*64)for k in BINDINGS})
 
 class PhysicalFeatureTests(unittest.TestCase):
+    def test_acquisition_definitions_separate_price_cohorts(self):
+        data=model();current=observation()
+        acquisition={'instrumenter':'a'*64,'runner':'b'*64,'parser':'c'*64}
+        current['cohort']['acquisition']=acquisition
+        self.assertIsNone(PhysicalPrices(data).score(current)[0])
+        data['cohort']['acquisition']=copy.deepcopy(acquisition)
+        prices=PhysicalPrices(data)
+        self.assertEqual(prices.score(current)[0],3.75)
+        for name in acquisition:
+            changed=copy.deepcopy(current);changed['cohort']['acquisition'][name]='d'*64
+            self.assertIsNone(prices.score(changed)[0])
+
+    def test_acquisition_cohort_must_match_authenticated_collector_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);path,o=self.bound(root)
+            o['cohort']['acquisition']={name:o['bindings'][name]['sha256'] for name in ('instrumenter','runner')}
+            path.write_text(json.dumps(o));load_observation(path)
+            o['cohort']['acquisition']['instrumenter']='a'*64;path.write_text(json.dumps(o))
+            with self.assertRaisesRegex(ValueError,'acquisition bindings mismatch'):load_observation(path)
+            o['cohort']['acquisition']['instrumenter']=o['bindings']['instrumenter']['sha256']
+            instrumentation=json.loads((root/'instrumentation').read_text());instrumentation['parser_sha256']='c'*64
+            (root/'instrumentation').write_text(json.dumps(instrumentation));o['bindings']['instrumentation']['sha256']=file_hash(root/'instrumentation')
+            trace=json.loads((root/'trace').read_text());trace['instrumentation_sha256']=file_hash(root/'instrumentation')
+            (root/'trace').write_text(json.dumps(trace));o['bindings']['trace']['sha256']=file_hash(root/'trace');path.write_text(json.dumps(o))
+            with self.assertRaisesRegex(ValueError,'parser binding missing'):load_observation(path)
+
     def test_validated_prices_do_not_alias_caller_owned_dictionaries(self):
         data=model(); original=copy.deepcopy(data);prices=PhysicalPrices(data)
         expected=prices.score(observation())
