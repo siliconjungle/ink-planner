@@ -281,7 +281,7 @@ def main():
             if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
                 raise ValueError('Acquisition input changed: ' + path)
         verify(toolchain)
-        store = (Store(a.output_store).extend([obj]) if (a.output_store/'store/snapshot.json').exists()
+        store = (Store(a.output_store).extend([obj]) if Store.is_published(a.output_store)
                  else Store.publish(a.output_store, [obj]))
         a.o.parent.mkdir(parents=True, exist_ok=True)
         a.o.write_bytes(selection.read_bytes())

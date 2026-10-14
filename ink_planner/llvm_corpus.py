@@ -74,7 +74,7 @@ def run(compiler, clang, output, store_root, *, seed=0, count=32, depth=4, secon
     if hashlib.sha256(compiler.read_bytes()).hexdigest()!=manifest['compiler_sha256'] or hashlib.sha256(clang.read_bytes()).hexdigest()!=manifest['clang_sha256'] or hashlib.sha256(path.read_bytes()).hexdigest()!=manifest['source_sha256']:
         raise ValueError('Acquisition inputs changed')
     verify(toolchain)
-    store=(Store(store_root).extend(objects.values(),names) if (store_root/'store/snapshot.json').exists()
+    store=(Store(store_root).extend(objects.values(),names) if Store.is_published(store_root)
            else Store.publish(store_root,objects.values(),names))
     receipt=dict(schema=1,seed=seed,programs=count,checked_unique_laws=len(objects),snapshot=store.snapshot_id,
                  manifest_sha256=hashlib.sha256((output/'manifest.json').read_bytes()).hexdigest(),
