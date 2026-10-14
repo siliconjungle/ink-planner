@@ -297,6 +297,11 @@ class _Estimator:
             counts = combine(counts, extra); counts['branches'] += 1
             if type(left.literal) is not bool:
                 self.assumptions.add('Unknown short-circuit branch conservatively prices its right arm')
+                # A neutral right operand preserves the unknown left value:
+                # x && true and x || false cannot determine a later branch.
+                # Only an absorbing constant determines the whole expression.
+                if type(right.literal) is not bool or right.literal == required:
+                    return Value(sort), counts
             return right, counts
         if name == 'call:choose' and len(terms) == 3:
             condition, a = self.eval(terms[0], env, bound, active, depth + 1)

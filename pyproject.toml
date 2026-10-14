@@ -23,6 +23,8 @@ ink-select-implementation = "ink_planner.implementation_selection:main"
 ink-select-physical = "ink_planner.physical_selection:main"
 ink-autotune = "ink_planner.autotune:main"
 ink-synthesize = "ink_planner.synthesis:main"
+ink-learn-llvm = "ink_planner.llvm_learning:main"
+ink-learn-llvm-corpus = "ink_planner.llvm_corpus:main"
 ink-plan-parallel = "ink_planner.parallel_search:main"
 ink-plan-adaptive = "ink_planner.adaptive_search:main"
 

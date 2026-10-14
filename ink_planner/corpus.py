@@ -302,7 +302,7 @@ def execution_context(args):
     sources = hashlib.sha256()
     for directory in ['producers', 'ink_knowledge', 'libraries']:
         for path in sorted((args.knowledge_root / directory).rglob('*')):
-            if path.is_file() and not path.is_symlink() and path.suffix in {'.py', '.json', '.ink'} and '__pycache__' not in path.parts:
+            if path.is_file() and not path.is_symlink() and path.suffix in {'.py', '.json', '.gz', '.mjs', '.rs', '.txt', '.ink', '.lean'} and '__pycache__' not in path.parts:
                 sources.update(str(path.relative_to(args.knowledge_root)).encode())
                 sources.update(b'\0')
                 sources.update(hashlib.sha256(path.read_bytes()).digest())

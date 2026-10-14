@@ -1,8 +1,10 @@
 """Offline target-work metadata cannot bypass admission or fill unknown work."""
 import copy,json,math,sys,tempfile,unittest
 from pathlib import Path
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from ink_planner.physical_features import COMPONENTS,BINDINGS,PhysicalPrices,file_hash,load_observation,rank_observations
+from ink_planner import physical_features
 
 
 def cohort(target='javascript',boundary='owned'):
@@ -15,6 +17,15 @@ def observation(n=10):
     return dict(cohort=cohort(),entry='entry',fixture_id='fixture',components={k:n if k=='loop_iterations'else 1 if k in('invocations','allocation_events')else 0 for k in COMPONENTS},known={k:True for k in COMPONENTS},bindings={k:dict(sha256='4'*64)for k in BINDINGS})
 
 class PhysicalFeatureTests(unittest.TestCase):
+    def test_validated_prices_do_not_alias_caller_owned_dictionaries(self):
+        data=model(); original=copy.deepcopy(data);prices=PhysicalPrices(data)
+        expected=prices.score(observation())
+        data['weights']['loop_iterations']=999
+        data['cohort']['host']['engine']='changed'
+        data['training']['scope']='changed'
+        self.assertEqual(prices.score(observation()),expected)
+        self.assertEqual(prices.data,original)
+
     def test_finite_ns_prices_not_boolean_or_unbounded(self):
         self.assertEqual(PhysicalPrices(model()).score(observation())[0],3.75)
         for bad in(True,-1,float('nan'),float('inf'),10**10):
@@ -82,5 +93,65 @@ class PhysicalFeatureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory()as d:
             root=Path(d);path,o=self.bound(root);trace=json.loads((root/'trace').read_text());trace['runner_sha256']='0'*64;(root/'trace').write_text(json.dumps(trace));o['bindings']['trace']['sha256']=file_hash(root/'trace');path.write_text(json.dumps(o))
             with self.assertRaisesRegex(ValueError,'replay bindings'):load_observation(path)
+
+    def bound_with_boundary(self, root):
+        path,o=self.bound(root)
+        for name in physical_features.BOUNDARY_BINDINGS:(root/name).write_text(name)
+        (root/'boundary_receipt').write_text(json.dumps(dict(
+            runner_sha256=file_hash(root/'boundary_runner'),
+            producer_sha256=file_hash(root/'boundary_extractor'),
+            adapter_sha256=file_hash(root/'boundary_adapter'))))
+        (root/'boundary_instrumentation').write_text(json.dumps(dict(
+            artifact_sha256=file_hash(root/'boundary_adapter'),
+            instrumented_sha256=file_hash(root/'boundary_instrumented'),
+            instrumenter_sha256=file_hash(root/'instrumenter'))))
+        trace=json.loads((root/'trace').read_text())
+        trace['boundary']={key:file_hash(root/name) for name,key in [
+            ('boundary_runner','runner_sha256'),('boundary_extractor','extractor_sha256'),
+            ('boundary_adapter','adapter_sha256'),('boundary_instrumented','instrumented_sha256'),
+            ('boundary_instrumentation','instrumentation_sha256'),('boundary_receipt','extraction_sha256')]}
+        (root/'trace').write_text(json.dumps(trace))
+        o['bindings'].update({name:dict(path=name,sha256=file_hash(root/name))
+            for name in physical_features.BOUNDARY_BINDINGS})
+        o['bindings']['trace']['sha256']=file_hash(root/'trace')
+        path.write_text(json.dumps(o));return path,o
+
+    def test_parsed_receipts_use_authenticated_bytes_after_concurrent_edits(self):
+        with tempfile.TemporaryDirectory()as d:
+            root=Path(d);path,expected=self.bound_with_boundary(root)
+            sentinel=root/'expected-artifact';sentinel.write_bytes((root/'artifact').read_bytes())
+            changed=[]
+            def hash_then_change(p):
+                digest=file_hash(p)
+                # Expected-candidate binding checks happen after all source
+                # bindings have been authenticated, before trace validation.
+                if Path(p)==sentinel:
+                    for name in ('trace','instrumentation','boundary_receipt','boundary_instrumentation'):
+                        (root/name).write_text('null');changed.append(name)
+                return digest
+            with patch.object(physical_features,'file_hash',hash_then_change):
+                actual=load_observation(path,dict(artifact=sentinel))
+            self.assertEqual(len(changed),4)
+            self.assertEqual(actual,expected)
+
+    def test_malformed_nested_receipts_fail_as_unavailable_metadata(self):
+        with tempfile.TemporaryDirectory()as d:
+            root=Path(d)
+            for name in ('trace','instrumentation','boundary_receipt','boundary_instrumentation'):
+                for bad in (None,[],0,'receipt'):
+                    with self.subTest(name=name,bad=bad):
+                        path,o=self.bound_with_boundary(root)
+                        (root/name).write_text(json.dumps(bad))
+                        o['bindings'][name]['sha256']=file_hash(root/name)
+                        path.write_text(json.dumps(o))
+                        with self.assertRaisesRegex(ValueError,'metadata object required'):
+                            load_observation(path)
+            for field,bad in [('rows',[None]),('rows',['row']),('boundary',None),('boundary',[])]:
+                with self.subTest(field=field,bad=bad):
+                    path,o=self.bound_with_boundary(root)
+                    trace=json.loads((root/'trace').read_text());trace[field]=bad
+                    (root/'trace').write_text(json.dumps(trace))
+                    o['bindings']['trace']['sha256']=file_hash(root/'trace');path.write_text(json.dumps(o))
+                    with self.assertRaises(ValueError):load_observation(path)
 
 if __name__=='__main__':unittest.main()

@@ -102,8 +102,10 @@ structural ranking remain unchanged.
 Offline cost profiles use `python -m ink_planner.cost_profiles --knowledge-root
 KNOWLEDGE --rows ROWS.json --target-key TARGET -o PROFILE.json`. Each row names an
 immutable observation and its exact compiled scope. The fitter uses explicit
-workload features, nonnegative prices and intersected observed domains; hosts
-never extrapolate or run training probes. Fitted models retain their observation
+workload features, nonnegative prices and intersected per-feature observed domains;
+hosts reject values outside those ranges and never run training probes. These
+axis-aligned ranges do not prevent joint extrapolation between correlated
+features. Fitted models retain their observation
 IDs in knowledge's `store/cost-models`, outside mathematical admission. Structural
 search defaults come from knowledge's `structural-costs.json` and are unmeasured
 hypotheses, never evidence of speed or correctness.
