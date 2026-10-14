@@ -2,6 +2,7 @@
 import hashlib,json,os,tempfile,time
 from pathlib import Path
 from ink_knowledge import identity
+from .plan_cache import prune
 
 LIMIT=16000000
 
@@ -26,12 +27,14 @@ def key(planner,source,snapshot,options,usage_profiles):
 def load(root,key):
     path=Path(root)/'compiled-cache'/f'{key}.json'
     try:
-        if path.stat().st_size>LIMIT:return None
-        value=json.loads(path.read_bytes())
+        with path.open('rb') as file:raw=file.read(LIMIT+1)
+        if len(raw)>LIMIT:return None
+        value=json.loads(raw)
+        if not isinstance(value,dict) or not isinstance(value.get('receipt'),dict):return None
         if value['schema']!=1 or value['key']!=key or not 0<=time.time()-value['created_unix']<=86400:return None
         if value['receipt'].get('unchecked_checks',0):return None
         return value
-    except (OSError,ValueError,KeyError,TypeError):return None
+    except (OSError,ValueError,KeyError,TypeError,RecursionError):return None
 
 def save(root,key,package,receipt):
     # A deadline leaves candidate applicability unknown. Do not turn a transient
@@ -52,6 +55,4 @@ def save(root,key,package,receipt):
         os.replace(tmp,directory/f'{key}.json')
     finally:
         if Path(tmp).exists():Path(tmp).unlink()
-    for path in sorted(directory.glob('*.json'),key=lambda p:p.stat().st_mtime_ns,reverse=True)[128:]:
-        try:path.unlink()
-        except FileNotFoundError:pass
+    prune(directory,128)

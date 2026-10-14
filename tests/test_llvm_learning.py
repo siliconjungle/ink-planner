@@ -52,11 +52,15 @@ class LLVMBridge(unittest.TestCase):
                            op(self.u,'call:word_and',self.x,op(self.u,'call:word_not',self.y))),
                         op(self.u,'call:wrapping_shl',self.x,self.y),
                         op(value('U64'),'call:wrapping_shr',var(value('U64'),'wide'),self.y)]
+            # This checks real discovery and proof admission, not machine speed.
+            # Keep a finite acquisition budget with room for slower CI CPUs;
+            # deadline enforcement has its own deterministic producer tests.
+            authoring_seconds = 60
             for i, original in enumerate(examples):
                 case=d/str(i); case.mkdir()
                 candidate, params, receipt = discover(original, clang, case)
                 goal = dict(params=params,conditions=[],**{'from':original,'to':candidate})
-                checked_law(compiler, core, goal, case, seconds=5)
+                checked_law(compiler, core, goal, case, seconds=authoring_seconds)
                 self.assertEqual(len(receipt['output_ir_sha256']),64)
                 if i < 2:
                     self.assertNotEqual(original,candidate)
@@ -66,14 +70,14 @@ class LLVMBridge(unittest.TestCase):
                        **{'from':op(value('Bool'),'binary:>',op(self.u,'binary:+',self.x,word('U32',1)),self.x),
                           'to':{'sort':value('Bool'),'node':{'Bool':True}}})
             with self.assertRaisesRegex(ValueError,'counterexample'):
-                checked_law(compiler,core,bad,d,seconds=5)
+                checked_law(compiler,core,bad,d,seconds=authoring_seconds)
             masked=op(self.u,'call:word_and',self.x,word('U32',255))
             bounded=op(value('Bool'),'binary:<',masked,word('U32',256))
             alternatives, receipt=discover_facts(bounded)
             self.assertEqual(receipt['facts']['minimum'],1)
             for _,candidate in alternatives:
                 checked_law(compiler,core,dict(params=parameters(bounded),conditions=[],
-                            **{'from':bounded,'to':candidate}),d,seconds=5)
+                            **{'from':bounded,'to':candidate}),d,seconds=authoring_seconds)
             # Facts remain suggestions: replay correlated arithmetic and
             # modulo-count shift consequences through the ordinary checker.
             for kind in ('U32','U64'):
@@ -88,7 +92,7 @@ class LLVMBridge(unittest.TestCase):
                     self.assertTrue(alternatives)
                     for _,candidate in alternatives:
                         checked_law(compiler,core,dict(params=parameters(original),conditions=[],
-                                    **{'from':original,'to':candidate}),d,seconds=5)
+                                    **{'from':original,'to':candidate}),d,seconds=authoring_seconds)
 
 
 if __name__ == '__main__':

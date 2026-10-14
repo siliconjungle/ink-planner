@@ -40,6 +40,11 @@ def save(directory, key, raw):
         os.replace(tmp,directory/(key+'.json'))
     finally:
         if Path(tmp).exists():Path(tmp).unlink()
+    prune(directory,256)
+
+
+def prune(directory,keep):
+    """Evict only cache-owned regular files; tolerate concurrent removal."""
     # Cache eviction changes only future search cost, never proof authority.
     entries=[]
     for path in directory.glob('*.json'):
@@ -47,6 +52,6 @@ def save(directory, key, raw):
         try:info=path.lstat()
         except FileNotFoundError:continue  # Another planner may evict it first.
         if stat.S_ISREG(info.st_mode):entries.append((info.st_mtime_ns,path.name,path))
-    for _,_,path in sorted(entries,reverse=True)[256:]:
+    for _,_,path in sorted(entries,reverse=True)[keep:]:
         try:path.unlink()
         except FileNotFoundError:pass

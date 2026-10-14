@@ -11,6 +11,7 @@ It grants no proof, applicability or profitability authority, and a law that is
 not observed here may still apply to programs outside the corpus.
 """
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -36,7 +37,7 @@ def clone_knowledge(source, destination):
     SQLite is mutable, so a hard link would let candidate publication modify
     the installed index. Its backup API also avoids copying a partial WAL state.
     """
-    source, destination = Path(source), Path(destination)
+    source, destination = Path(source).resolve(), Path(destination).resolve()
     omitted = {'.git', 'build', 'compiled-cache', '__pycache__', 'store',
                'index.sqlite', 'index.sqlite-wal', 'index.sqlite-shm'}
     def ignore(path, names):
@@ -76,8 +77,8 @@ def clone_knowledge(source, destination):
         shutil.copytree(source / 'store', destination / 'store', copy_function=private_file_copy, symlinks=True)
     index = source / 'index.sqlite'
     if index.exists():
-        with sqlite3.connect(index.as_uri() + '?mode=ro', uri=True) as original:
-            with sqlite3.connect(destination / 'index.sqlite') as private:
+        with closing(sqlite3.connect(index.as_uri() + '?mode=ro', uri=True)) as original:
+            with closing(sqlite3.connect(destination / 'index.sqlite')) as private, private:
                 original.backup(private)
 
 
