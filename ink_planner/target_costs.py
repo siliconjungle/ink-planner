@@ -16,6 +16,7 @@ COMPONENTS = ('invocations', 'traversal_elements', 'allocation_events',
 MAX_COUNT = 10**18
 MAX_CARDINALITY = 10**9
 MAX_PRICE = 10**9
+MAX_FOLD_STEPS = 64
 DEFAULT_LIMITS = {'nodes': 8192, 'depth': 48, 'helper_depth': 16}
 BOUNDARIES = ('owned', 'into', 'resident_owned', 'resident_into',
               'gpu_upload_readback', 'gpu_resident_readback', 'gpu_resident')
@@ -247,14 +248,53 @@ class _Estimator:
             counts = combine(counts, extra)
         return value, counts
 
-    def loop(self, counts, callback, n):
+    def loop(self, counts, callback, n, stage=True):
         counts = combine(counts, scaled(callback, n))
         counts['traversal_elements'] = min(MAX_COUNT, counts['traversal_elements'] + n)
         work = callback['scalar_ops'] + callback['div_rem'] + callback['branches'] + callback['unknown_work']
         counts['loop_body_pressure'] = min(MAX_COUNT, counts['loop_body_pressure'] + n * work * work)
-        if self.model.gpu:
+        if self.model.gpu and stage:
             counts['gpu_dispatches'] += 1
         return counts
+
+    @staticmethod
+    def stable_value(left, right):
+        # Captured closure environments can change future work even when their
+        # outer value descriptors look identical. Do not accelerate those.
+        return left.closure is None and right.closure is None and (
+            left.sort, left.length, left.exact, left.literal, left.fresh) == (
+            right.sort, right.length, right.exact, right.literal, right.fresh)
+
+    def fold(self, sort, values, counts, active, depth):
+        source, accumulator, callback = values
+        n = source.length
+        if n is None:
+            n = self.model.cardinality['default']
+            counts['unknown_work'] += 1
+            self.unknowns.add('unknown fold extent')
+        if n == 0:
+            return accumulator, counts
+        element = Value({'Value': list_type(source.sort)})
+        if self.model.gpu:
+            counts['gpu_dispatches'] += 1
+            counts['unknown_work'] += n
+        self.assumptions.add('Fold analysis tracks abstract accumulator values; element values and order-dependent costs remain unknown')
+        for step in range(min(n, MAX_FOLD_STEPS)):
+            result, work = self.invoke(callback, [element, accumulator], active, depth)
+            counts = self.loop(counts, work, 1, stage=False)
+            remaining = n-step-1
+            if not remaining:
+                return result, counts
+            if self.stable_value(accumulator, result):
+                # This is an abstract fixed point, not an extrapolation from
+                # two sampled runtimes or a guessed cardinality growth rate.
+                return result, self.loop(counts, work, remaining, stage=False)
+            accumulator = result
+            if self.nodes >= self.model.limits['nodes']:
+                break
+        value, unknown = self.unknown(sort, 'fold accumulator did not stabilize within analysis budget')
+        value.length = None  # Do not pretend its output has the input extent.
+        return value, self.loop(counts, unknown, remaining, stage=False)
 
     def eval(self, term, env, bound, active, depth):
         self.nodes += 1
@@ -344,7 +384,11 @@ class _Estimator:
                 arguments = [Value({'Value': 'U32'}), element]
             elif name == 'method:zip':
                 arguments = [element, Value({'Value': list_type(values[1].sort)})]
-            _, callback = self.invoke(values[-1], arguments, active, depth)
+            # An empty producer never invokes its callback. Unsupported work
+            # in that body must not make this known-empty path incomplete.
+            callback = vector()
+            if n:
+                _, callback = self.invoke(values[-1], arguments, active, depth)
             counts = self.loop(counts, callback, n)
             v = Value(sort, n, values[0].exact and name != 'method:filter', fresh=True)
             counts['allocation_events'] += 1; counts['allocation_bytes'] += self.bytes(v)
@@ -361,15 +405,14 @@ class _Estimator:
             counts['copy_bytes'] += self.bytes(v); counts['traversal_elements'] += n
             if self.model.gpu: counts['gpu_dispatches'] += 1
             return v, counts
-        if name in ('method:scan', 'scan.acc', 'call:foldr', 'call:sum', 'sum.acc') and values:
+        if name in ('call:foldr', 'call:foldl') and len(values) == 3:
+            return self.fold(sort, values, counts, active, depth)
+        if name in ('method:scan', 'scan.acc', 'call:sum', 'sum.acc') and values:
             n = values[0].length
             if n is None:
                 n = self.model.cardinality['default']; counts['unknown_work'] += 1
                 self.unknowns.add('unknown reduction extent')
             callback = vector(); callback['scalar_ops'] = 1
-            if name == 'call:foldr':
-                scalar = Value(sort)
-                _, callback = self.invoke(values[-1], [scalar, scalar], active, depth)
             counts = self.loop(counts, callback, n)
             if self.model.gpu:
                 counts['unknown_work'] += n or 1
