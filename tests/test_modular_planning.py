@@ -158,10 +158,17 @@ class ModularPlanning(unittest.TestCase):
                 command=[sys.executable,str(root/'planner/plan.py'),'--compiler',str(compiler),'--core',str(core),
                     '--snapshot',str(d/'store/store/snapshot.json'),'--cost-model',str(d/'cost.json'),
                     '--modular-cache',str(d/'cache'),'-o',str(d/'selection.json'),'--budget','16',
-                    '--alternatives',str(d/'alternatives.jsonl'),'--stream-alternatives']
+                    '--alternatives',str(d/'alternatives.jsonl'),'--stream-alternatives',
+                    '--search-strategy','stochastic','--search-restarts','2','--search-seed','17',
+                    '--search-trace',str(d/'trace.json')]
                 result=subprocess.run(command,capture_output=True,text=True,timeout=60)
                 self.assertEqual(result.returncode,0,result.stderr)
                 receipt=json.loads(result.stdout);self.assertLessEqual(receipt['attempts'],16)
+                self.assertEqual(receipt['search_policy']['ordering'],'stochastic')
+                if iteration!=1:
+                    trace=json.loads((d/'trace.json').read_text())
+                    self.assertTrue(trace['rows'])
+                    self.assertTrue(all('prefix_sha256' in row for row in trace['rows']))
                 self.assertEqual(receipt['initial_components']['complete'],True)
                 self.assertGreater(receipt['initial_cost'],receipt['selected_cost'])
                 self.assertEqual(receipt['modular']['hits'],[0,2,1][iteration])
@@ -169,7 +176,9 @@ class ModularPlanning(unittest.TestCase):
                     self.assertGreaterEqual(receipt['rejected'],1)
                     self.assertTrue(receipt['modular']['replanned'])
                 package=json.loads((d/'selection.json').read_text());self.assertEqual(len(package['applications']),2)
-                for row in (d/'alternatives.jsonl').read_text().splitlines():
+                alternatives=(d/'alternatives.jsonl').read_text().splitlines()
+                self.assertGreaterEqual(len(alternatives),2)
+                for row in alternatives:
                     path=d/'alternative.json';path.write_text(row)
                     checked=subprocess.run([str(compiler),'check-selection',str(core),str(path)],capture_output=True,text=True)
                     self.assertEqual(checked.returncode,0,checked.stderr)

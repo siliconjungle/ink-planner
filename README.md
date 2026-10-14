@@ -414,3 +414,11 @@ atomically. Cache hints never supply proof authority.
 `--modular-cache` supports schema2 target-component costs, including the complete
 current helper context, incremental law-template discovery and streamed checked
 alternatives. Component scores remain search estimates, not runtime measurements.
+
+Seeded restarts share a single deadline as well as a checker-attempt budget.
+Each restart receives a share of the remaining time; a completed overrun cannot
+start another restart. Modular mode honours `--search-strategy`, seed, restarts,
+optional neighbour hints and scorer settings. Its trace records each local
+proposal digest together with the accepted-prefix digest. Every combined chain
+still replays against the original module. Neighbour queries change ordering
+only; rejected hints cannot suppress the remaining exact candidates.

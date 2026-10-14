@@ -60,14 +60,21 @@ class Policy:
 
 
 def search_restarts(search, subject, catalogue, check, *, budget=128, restarts=4, strategy='stochastic', seed=0, scorer=None, **options):
-    if not 0 <= budget <= (1_000_000 if strategy=='baseline' else 4096) or not 1 <= restarts <= 16: raise ValueError('restart proof budget')
-    if strategy not in ('baseline','stochastic'): raise ValueError('search strategy')
+    if type(budget) is not int or not 0 <= budget <= (1_000_000 if strategy=='baseline' else 4096) or type(restarts) is not int or not 1 <= restarts <= 16: raise ValueError('restart proof budget')
+    if strategy not in ('baseline','stochastic') or type(seed) is not int: raise ValueError('search strategy')
+    duration=options.pop('time_seconds',600)
+    if type(duration) not in (int,float) or not math.isfinite(duration) or duration<0:raise ValueError('restart time budget')
     if strategy=='baseline': restarts=1
+    deadline=time.monotonic()+duration
     best=None; receipts=[]; rows=[]; remaining=budget
     for i in range(restarts):
-        quota=remaining//(restarts-i)
+        available=max(0,deadline-time.monotonic())
+        # One zero-work call computes the ordinary baseline receipt. Subsequent
+        # restarts never get a fresh deadline or manufacture checker quota.
+        if i and (remaining<=0 or available<=0):break
+        quota=(remaining+restarts-i-1)//(restarts-i) if available>0 else 0
         policy=None if strategy=='baseline' or (i==0 and restarts>1) else Policy(strategy,seed+i,scorer=scorer)
-        run_options=dict(options)
+        run_options=dict(options,time_seconds=available/(restarts-i))
         if 'engine_strategy' in run_options:run_options['strategy']=run_options.pop('engine_strategy')
         if i==0 and restarts>1:run_options['neighbourhood']=None
         apps,receipt=search(subject,catalogue,check,budget=quota,policy=policy,**run_options)
@@ -77,5 +84,10 @@ def search_restarts(search, subject, catalogue, check, *, budget=128, restarts=4
         if best is None or receipt['selected_cost']<best[1]['selected_cost']: best=(apps,receipt)
     result=dict(best[1]); result.update(attempts=sum(r['attempts'] for r in receipts),
         rejected=sum(r['rejected'] for r in receipts),generated_proposals=sum(r['generated_proposals'] for r in receipts),
-        search_policy=dict(strategy=strategy,seed=seed,restarts=restarts,budget=budget,runs=receipts),check_rows=rows)
+        exhausted=remaining<=0,
+        search_policy=dict(strategy=strategy,seed=seed,restarts=len(receipts),requested_restarts=restarts,budget=budget,time_seconds=duration,runs=receipts),check_rows=rows)
+    result['memo']=dict(result.get('memo',{}),
+        rounds=sum(r.get('memo',{}).get('rounds',0)for r in receipts),
+        timed_out=time.monotonic()>=deadline or any(r.get('memo',{}).get('timed_out',False)for r in receipts),
+        memory_exhausted=any(r.get('memo',{}).get('memory_exhausted',False)for r in receipts))
     return best[0],result

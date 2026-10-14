@@ -96,7 +96,7 @@ def plan(subject, catalogue, check, search, program, cache_dir, context, **optio
     timed_out = False
     search_timed_out = memory_exhausted = False
     rounds = 0
-    rows, combined = [], []
+    rows, combined, check_rows = [], [], []
     alternatives = options.pop('alternatives', None)
     refresh = options.pop('refresh', None)
     bodies = dict(subject['functions'])
@@ -164,6 +164,12 @@ def plan(subject, catalogue, check, search, program, cache_dir, context, **optio
                 memory_exhausted |= limits.get('memory_exhausted', False)
                 search_timed_out |= limits.get('timed_out', False)
                 row['search_limits'] = limits
+                if 'search_policy' in receipt:
+                    row['search_policy'] = receipt['search_policy']
+                prefix = hashlib.sha256(_key(combined).encode()).hexdigest()
+                check_rows.extend(dict(item,function=name,prefix_sha256=prefix,
+                    scope='Local proposal digest plus accepted-prefix digest; combined chain checked')
+                    for item in receipt.get('check_rows', []))
                 row.update(initial_cost=receipt['initial_cost'], selected_cost=receipt['selected_cost'])
             raw = (_key(dict(schema=SCHEMA, function=name, applications=applications)) + '\n').encode()
             if searched and len(applications) <= 4096 and len(raw) <= MAX_BYTES:
@@ -181,7 +187,7 @@ def plan(subject, catalogue, check, search, program, cache_dir, context, **optio
             if law is not None:
                 bodies[name] = replace(bodies[name], step['path'], substitute(law['to'], step['arguments']))
     receipt = dict(attempts=attempts, rejected=rejected, generated_proposals=generated,
-                   exhausted=attempts >= total_budget, estimate='structural; not measured runtime',
+                   exhausted=attempts >= total_budget, check_rows=check_rows, estimate='structural; not measured runtime',
                    memo=dict(rounds=rounds, timed_out=timed_out or search_timed_out, memory_exhausted=memory_exhausted),
                    modular=dict(functions=rows, hits=sum(r['cache']=='hit' for r in rows),
                                 misses=sum(r['cache']=='miss' for r in rows),
