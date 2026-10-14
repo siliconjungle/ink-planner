@@ -19,9 +19,17 @@ def applicable(law, program, subject):
     for name, bound in context.get('definitions', {}).items():
         actual = functions.get(name)
         definition = bound.get('definition', {})
+        actual_body = subject['functions'].get(name)
+        stored_body = definition.get('body')
+        if isinstance(stored_body, dict) and 'nodes' in stored_body and actual_body is not None:
+            from producers.flat_term import encode
+            try:
+                actual_body = encode(actual_body)
+            except (ValueError, KeyError, TypeError):
+                return False
         if actual is None or actual['params'] != definition.get('params') \
                 or actual['result'] != definition.get('result') \
-                or subject['functions'].get(name) != definition.get('body'):
+                or actual_body != stored_body:
             return False
     return True
 

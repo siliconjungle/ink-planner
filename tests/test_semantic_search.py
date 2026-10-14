@@ -179,6 +179,21 @@ class BinderSafeRebuilding(unittest.TestCase):
         result['sort']['Arrow'][0]['Value']='U64'
         self.assertEqual(tree,saved)
 
+class ExactModuleSerialization(unittest.TestCase):
+    def test_shared_and_rebuilt_bodies_have_exact_keys_under_eviction(self):
+        from ink_planner.semantic_search import ModuleKeys,key
+        import copy
+        x=variable('x');body=dict(sort=x['sort'],node={'Op':['call:leaf',[x]]})
+        keys=ModuleKeys(4096);first={'z':body,'a':x,'quoted"\u00e9':body}
+        self.assertEqual(keys.module(first),key(first));misses=keys.misses
+        self.assertEqual(keys.module(dict(reversed(list(first.items())))),key(first))
+        self.assertEqual(keys.misses,misses);self.assertGreater(keys.hits,0)
+        changed=dict(first,a=dict(sort=x['sort'],node={'Bound':0}))
+        self.assertNotEqual(keys.module(changed),keys.module(first));self.assertEqual(keys.module(changed),key(changed))
+        self.assertEqual(keys.module(copy.deepcopy(first)),key(first))
+        tiny=ModuleKeys(1)
+        for rows in [first,changed,{'new':body},{}]:self.assertEqual(tiny.module(rows),key(rows));self.assertLessEqual(tiny.bytes,1)
+
 
 from ink_planner.semantic_search import interleave_premise_classes
 
