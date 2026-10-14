@@ -2,6 +2,14 @@
 
 Untrusted search, cost selection and routing for [Ink](https://github.com/siliconjungle/ink-lang). This repository can propose programs and execution plans; only the semantic core can admit their proof evidence. It neither defines language semantics nor emits target code.
 
+Use an optimized compiler (`cargo build --release --bin ink`) for planning-time
+measurements. Checker deadlines include request transfer and proof replay; a
+debug build can exhaust them on a proof that an optimized build checks promptly.
+Deadline-limited candidates remain unchecked, not mathematically rejected.
+Compiled search reports `unchecked_checks` and stops with `checker-time` when
+these are the only remaining incomplete work. Such results never enter the
+selected-plan cache, and other proposals may still be checked and selected.
+
 Install `ink-knowledge` first, then `python3 -m pip install -e .`. The distribution pins both repositories; its source entry points `plan.py` and `route.py` use the installed package or explicitly configured/pinned knowledge checkout. `INK_KNOWLEDGE_ROOT` selects a separate installation.
 
 ```sh
