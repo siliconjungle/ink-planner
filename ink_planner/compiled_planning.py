@@ -40,13 +40,18 @@ def code_fingerprint():
         for label,root in roots for p in sorted(root.rglob('*'))if p.suffix in {'.py','.json','.gz','.mjs','.rs','.txt','.ink','.lean'}and p.is_file()})
 
 
+def protocol_identity(plan):
+    if plan and set(plan)<= {'schema','semantics','input_core_sha256','actions','direct_reads','output_publication','snapshot_rows','columns'} and plan.get('semantics')=='ink-state-protocol-v1' and not any(plan.get(k)for k in ['actions','direct_reads','output_publication','snapshot_rows','columns']):
+        return None
+    return plan
+
 def fingerprint(state):
     facts=set()
     for package in state.get('properties',[]):
         for fact in package['facts']:
             facts.add(identity({k:v for k,v in fact.items()if k!='proof'}))
     return identity(dict(source=state['source'],representation=(state.get('representation')or{}).get('representation'),
-        definitions=state.get('definition_choices')or{},physical=state.get('physical'),maintained=state.get('maintained'),route=state.get('route'),resources=state.get('resources'),properties=sorted(facts)))
+        definitions=state.get('definition_choices')or{},physical=state.get('physical'),maintained=state.get('maintained'),protocol=protocol_identity(state.get('protocol')),route=state.get('route'),resources=state.get('resources'),properties=sorted(facts)))
 
 def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_seconds=3600,memory_bytes=512_000_000):
     """The callback boundary admits complete proof chains, never hash equality.
