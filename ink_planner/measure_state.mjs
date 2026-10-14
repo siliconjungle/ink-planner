@@ -12,8 +12,10 @@ if(process.argv[2]==='--describe'){
 }
 const raw=fs.readFileSync(process.argv[2]);
 if(raw.byteLength>64000000)throw Error('state measurement request byte limit');
-const request=JSON.parse(raw),loadStart=performance.now(),mod=await import(pathToFileURL(request.artifact.path));
-const module_load_ms=String(performance.now()-loadStart),meta=request.metadata;
+const request=JSON.parse(raw),meta=request.metadata;
+const artifacts=request.artifacts??[request.artifact],modules=new Map(),loads=new Map();
+const offset=(request.process_index??0)%artifacts.length;
+for(let i=0;i<artifacts.length;i++){const a=artifacts[(i+offset)%artifacts.length],started=performance.now();modules.set(a.measurement,await import(pathToFileURL(a.path)));loads.set(a.measurement,String(performance.now()-started));}
 let transferNodes=0;
 function unpack(v,d=0){
  if(d>128||++transferNodes>1000000||!Array.isArray(v))throw Error('measurement transfer budget');
@@ -81,7 +83,7 @@ function consume(v){
 }
 function bindings(state){return new Map([...actions].map(([n])=>[n,state.bind(n)]));}
 function history(bound,rows){for(const c of rows)consume(bound.get(c.action.name)(...c.args));}
-async function validate(){
+async function validate(mod){
  assert.deepStrictEqual({setup:setup.map(c=>c.args),phases:Object.fromEntries(Object.entries(phases).map(([n,p])=>[n,p.calls.map(c=>c.args)]))},capturedInputs,'candidate mutated owned inputs');
  const state=mod.createState(),bound=bindings(state);
  for(let i=0;i<setup.length;i++)assert.deepStrictEqual(outcome(bound.get(setup[i].action.name)(...setup[i].args),setup[i].action),outcome(expectedSetup[i],setup[i].action));
@@ -92,33 +94,42 @@ async function validate(){
   assert.deepStrictEqual(Buffer.from(await state.checkpoint()),p.snapshot,'history portable snapshot');
  }
 }
-await validate();
-const rows=[];let peakRSS=0;
+const rows=[],rejected=[],lanes=[];let peakRSS=0;
+for(const a of artifacts){const mod=modules.get(a.measurement);try{await validate(mod);lanes.push({artifact:a,mod});}catch(e){rejected.push({measurement:a.measurement,reason:String(e.stack??e)});}}
+if(!lanes.some(l=>l.artifact.measurement===artifacts[0].measurement))throw Error('state baseline failed validation');
 for(const [phase,p]of Object.entries(phases)){
- if(p.kind==='module_load'){rows.push({phase,complete_call_ns:[String(Math.round(Number(module_load_ms)*1e6))],phase_calls:0,units_per_sample:1});continue;}
- const samples=[],count=p.kind==='history'?16:4;
- const state=mod.createState(),bound=bindings(state);await state.restore(seed);
- const measure=async()=>{
-  let total=0;
-  for(let i=0;i<count;i++){
-   if(p.kind==='history')await state.restore(seed); // reset outside the timed window
-   const started=performance.now();
-   if(p.kind==='history')history(bound,p.calls);
-   else if(p.kind==='initialise'){const fresh=mod.createState();history(bindings(fresh),setup);consume(fresh.version);}
-   else if(p.kind==='checkpoint')consume(await state.checkpoint());
-   else if(p.kind==='restore'){await state.restore(seed);consume(state.version);}
-   total+=performance.now()-started;
-  }
-  return String(Math.max(0,Math.round(total*1e6/count)));
- };
- for(let warm=0;warm<2;warm++)await measure();
+ const prepared=[];
+ for(const lane of lanes){
+  if(p.kind==='module_load'){rows.push({measurement:lane.artifact.measurement,phase,phase_kind:p.kind,complete_call_ns:[String(Math.max(1,Math.round(Number(loads.get(lane.artifact.measurement))*1e6)))],phase_calls:0,units_per_sample:1});continue;}
+  const count=p.kind==='history'?16:4,mod=lane.mod;
+  const state=mod.createState(),bound=bindings(state);await state.restore(seed);
+  const measure=async()=>{
+   let total=0;
+   for(let i=0;i<count;i++){
+    if(p.kind==='history')await state.restore(seed);
+    const started=performance.now();
+    if(p.kind==='history')history(bound,p.calls);
+    else if(p.kind==='initialise'){const fresh=mod.createState();history(bindings(fresh),setup);consume(fresh.version);}
+    else if(p.kind==='checkpoint')consume(await state.checkpoint());
+    else if(p.kind==='restore'){await state.restore(seed);consume(state.version);}
+    total+=performance.now()-started;
+   }
+   return String(Math.max(1,Math.round(total*1e6/count)));
+  };
+  prepared.push({...lane,measure,samples:[],count});
+ }
+ for(let warm=0;warm<2;warm++)for(const lane of prepared)await lane.measure();
  if(globalThis.gc)globalThis.gc();
- for(let round=0;round<9;round++)samples.push(await measure());
- rows.push({phase,complete_call_ns:samples,phase_calls:p.calls.length,units_per_sample:count});
+ for(let round=0;round<9;round++){
+  const order=(round+(request.process_index??0))%2?[...prepared].reverse():prepared;
+  for(const lane of order)lane.samples.push(await lane.measure());
+ }
+ for(const lane of prepared)rows.push({measurement:lane.artifact.measurement,phase,phase_kind:p.kind,complete_call_ns:lane.samples,phase_calls:p.calls.length,units_per_sample:lane.count});
  peakRSS=Math.max(peakRSS,process.resourceUsage().maxRSS*1024);
 }
-await validate();
+for(const lane of lanes)await validate(lane.mod);
 peakRSS=Math.max(peakRSS,process.resourceUsage().maxRSS*1024);
 for(const row of rows)row.peak_rss_bytes=peakRSS;
-console.log(JSON.stringify({schema:2,node:process.version,rows,module_load_ms,peak_rss_bytes:peakRSS,sink,
- scope:'Independent restored histories; setup/checkpoint/restore explicitly weighted; full observations; isolated-process total peak RSS including adapter'}));
+console.log(JSON.stringify({schema:3,pairing:'interleaved-state-lifecycle-v1',node:process.version,rows,rejected,
+ module_load:lanes.map(l=>({measurement:l.artifact.measurement,module_load_ms:loads.get(l.artifact.measurement)})),peak_rss_bytes:peakRSS,sink,
+ scope:'Independent restored histories; setup/checkpoint/restore explicitly weighted; full observations; fresh process containing isolated candidate states; alternating paired rounds; shared-process total peak RSS is a conservative bound including all candidates'}));

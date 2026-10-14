@@ -41,7 +41,8 @@ def code_fingerprint():
 
 
 def protocol_identity(plan):
-    if plan and set(plan)<= {'schema','semantics','input_core_sha256','actions','direct_reads','output_publication','snapshot_rows','columns'} and plan.get('semantics')=='ink-state-protocol-v1' and not any(plan.get(k)for k in ['actions','direct_reads','output_publication','snapshot_rows','columns']):
+    if plan and plan.get('compact_commits') is None:plan={k:v for k,v in plan.items()if k!='compact_commits'}
+    if plan and set(plan)<= {'schema','semantics','input_core_sha256','actions','direct_reads','output_publication','snapshot_rows','event_columns','inline_maintenance','compact_commits','columns'} and plan.get('semantics')=='ink-state-protocol-v1' and not any(plan.get(k)for k in ['actions','direct_reads','output_publication','snapshot_rows','event_columns','inline_maintenance','compact_commits','columns']):
         return None
     return plan
 
@@ -383,6 +384,10 @@ def main():
             guard=dict(minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)if acquisition is not None and automatic_probe is None else {}
             chosen,selection=rank(store,source,eligible,target,workload,profile,measurements[0],args.migration_count,args.memory_limit,
                 {m:'migrate:'+measurements[0]+':portable:'+m for m in measurements[1:]},**guard)
+            if acquisition is not None and acquisition.get('schema')==2:
+                from .state_selection import choose as choose_state
+                chosen,paired=choose_state(acquisition['acquisition'],profile,measurements[0],list(selection['total_ns']),args.minimum_measured_gain_ppm)
+                selection['uncertainty_guard']=paired;selection['reason']=paired['reason'];selection['selected_measurement']=chosen
             if acquisition is not None and automatic_probe is not None:
                 from .measured_selection import choose
                 setup={r['measurement']:int(r.get('setup_ns',float(r.get('module_load_ms','0'))*1000000))for r in acquisition['acquisition'].get('module_load',[])}
@@ -400,6 +405,10 @@ def main():
                     if held_profile!=profile:raise ValueError('holdout must retain the lifecycle objective weights')
                     held_choice,held_selection=rank(store,source,validated([measurements[i]for i in selected_indices],held_acquisition),held_target,held_workload,held_profile,measurements[0],
                         minimum_gain_ppm=args.minimum_measured_gain_ppm,sample_guard=True)
+                    if held_acquisition.get('schema')==2:
+                        from .state_selection import choose as choose_state
+                        held_choice,paired=choose_state(held_acquisition['acquisition'],held_profile,measurements[0],list(held_selection['total_ns']),args.minimum_measured_gain_ppm)
+                        held_selection['uncertainty_guard']=paired;held_selection['reason']=paired['reason']
                     proposed=chosen
                     if held_choice!=chosen:chosen=measurements[0]
                     selection['holdout']=dict(proposed=proposed,accepted=chosen==proposed,selection=held_selection,acquisition=held_acquisition,

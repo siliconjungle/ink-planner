@@ -1,8 +1,8 @@
 """Offline state lifecycle acquisition with an independent source oracle.
 
 Every measured history starts from the same portable source snapshot. Setup,
-checkpoint and restore have explicit phases. Each candidate/process is isolated;
-RSS is a conservative whole-host peak including the adapter, never a heap guess.
+checkpoint and restore have explicit phases. Candidate state is isolated; fresh processes interleave the admitted candidates.
+RSS conservatively includes all candidates and the adapter, never a heap guess.
 """
 import hashlib,json,re,shutil,subprocess,time
 from pathlib import Path
@@ -91,23 +91,21 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     if inspected.returncode:raise ValueError('state source schema: '+inspected.stderr[-2000:])
     metadata=json.loads(inspected.stdout);processes=getattr(planner.options,'measure_processes',3)
     if type(processes)is not int or not 1<=processes<=8:raise ValueError('state process bound')
-    reports=[];accepted=set();module_load=[]
-    for artifact in artifacts:
-        candidate=[];failure=None
-        request=planner.directory/(artifact['measurement']+'.state-measure.json')
-        request.write_text(json.dumps(dict(artifact=artifact,metadata=metadata,setup=transfer(spec['setup']),setup_expected=setup_expected,seed=seed,phases=phases),allow_nan=False))
-        for process in range(processes):
-            r=subprocess.run([node,'--expose-gc','--max-old-space-size='+str(max(32,min(4096,getattr(planner.options,'memory_bytes',512000000)//1000000))),str(RUNNER),str(request)],capture_output=True,text=True,timeout=remaining())
-            if r.returncode:failure=r.stderr[-2000:];break
-            report=json.loads(r.stdout)
-            if set(row['phase']for row in report['rows'])!=set(spec['phases']):raise ValueError('state measurement phase coverage')
-            candidate.append(report)
-        if failure:
-            rejected.append(dict(measurement=artifact['measurement'],reason=failure));continue
-        accepted.add(artifact['measurement'])
-        for process,report in enumerate(candidate):
-            reports.extend(dict(row,measurement=artifact['measurement'],process=process)for row in report['rows'])
-            module_load.append(dict(measurement=artifact['measurement'],process=process,module_load_ms=report['module_load_ms'],peak_rss_bytes=report['peak_rss_bytes']))
+    reports=[];accepted={a['measurement']for a in artifacts};module_load=[]
+    request=planner.directory/'paired-state-measure.json'
+    packet=dict(artifacts=artifacts,metadata=metadata,setup=transfer(spec['setup']),setup_expected=setup_expected,seed=seed,phases=phases)
+    for process in range(processes):
+        request.write_text(json.dumps(dict(packet,process_index=process),allow_nan=False))
+        r=subprocess.run([node,'--expose-gc','--max-old-space-size='+str(max(32,min(4096,getattr(planner.options,'memory_bytes',512000000)//1000000))),str(RUNNER),str(request)],capture_output=True,text=True,timeout=remaining())
+        if r.returncode:raise ValueError('paired state acquisition: '+r.stderr[-2000:])
+        report=json.loads(r.stdout)
+        if report.get('pairing')!='interleaved-state-lifecycle-v1':raise ValueError('state pairing receipt missing')
+        complete={a['measurement']for a in artifacts if {row['phase']for row in report['rows']if row['measurement']==a['measurement']}==set(spec['phases'])}
+        accepted&=complete
+        rejected.extend(dict(row,process=process)for row in report['rejected'])
+        reports.extend(dict(row,process=process)for row in report['rows'])
+        module_load.extend(dict(row,process=process,peak_rss_bytes=report['peak_rss_bytes'])for row in report['module_load'])
+    reports=[row for row in reports if row['measurement']in accepted]
     if measurements[0]not in accepted:raise ValueError('state baseline failed validation')
     from .compiled_planning import code_fingerprint
     if hashlib.sha256(planner.compiler.read_bytes()).hexdigest()!=planner.compiler_hash or code_fingerprint()!=planner.code_hash or target_context(planner,state=True)!=target:raise ValueError('state execution machinery changed during acquisition')
@@ -116,7 +114,7 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         obj=dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=row['measurement'],target=target,workload=phase_workload(workload,row['phase']),
                  metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=row['peak_rss_bytes']))
         Store.validate_observation(obj);observations.append(store.observe(obj))
-    report=dict(schema=2,processes=processes,rows=reports,rejected=rejected,module_load=module_load,input_fingerprints=sorted(fingerprints(spec)))
+    report=dict(schema=3,pairing='interleaved-state-lifecycle-v1',processes=processes,rows=reports,rejected=rejected,module_load=module_load,input_fingerprints=sorted(fingerprints(spec)))
     return target,workload,spec['profile'],dict(schema=2,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-start),observations=observations,
         validated_measurements=sorted(accepted),artifacts=artifacts,native_build=None,rejected=rejected,acquisition=report,
-        scope='Offline independent state histories, exact outcomes/events/versions/portable snapshots; per-candidate fresh processes; whole-host peak RSS including adapter; explicit setup/checkpoint/restore phases; no runtime probes')
+        scope='Offline independent state histories, exact outcomes/events/versions/portable snapshots; interleaved isolated candidate states in fresh processes; shared-process peak RSS bounds all candidates plus adapter; explicit setup/checkpoint/restore phases; no runtime probes')
