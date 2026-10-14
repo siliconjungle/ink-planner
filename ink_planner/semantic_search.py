@@ -12,6 +12,7 @@ import json
 import time
 import subprocess
 import tempfile
+from collections import deque
 from pathlib import Path
 if __package__:
     from .target_costs import TargetCostModel
@@ -19,6 +20,28 @@ else:
     from target_costs import TargetCostModel
 
 SEMANTICS = ('ink-conditional-laws-v1', 'ink-general-laws-v1')
+
+
+def interleave_premise_classes(pending):
+    """Reserve checks for unconditional proposals under a finite search budget.
+
+    Attractive conditional shortcuts can otherwise exhaust the checker budget
+    before any larger helper expansion is tried. Retain ranking within each
+    class, and alternate classes. Derived unconditional laws have their own
+    queue so converting premises into guards does not erase this distinction.
+    Every class still requires ordinary kernel admission.
+    This is a search policy, not evidence that an unconditional law is valid.
+    """
+    plain=deque(p for p in pending if not p[4]['conditions'] and not p[4].get('dependencies'))
+    derived=deque(p for p in pending if not p[4]['conditions'] and p[4].get('dependencies'))
+    conditional=deque(p for p in pending if p[4]['conditions'])
+    if sum(bool(q)for q in [plain,derived,conditional])<2:return pending
+    ordered=[]
+    while plain or derived or conditional:
+        if plain:ordered.append(plain.popleft())
+        if conditional:ordered.append(conditional.popleft())
+        if derived:ordered.append(derived.popleft())
+    return ordered
 
 
 def children(t):
@@ -367,8 +390,8 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                         pending.append((score, updated, proposal, fingerprint, law, args))
                         if near_misses is not None:near_misses.matched(ident, law)
         # Rank untrusted proposals before spending bounded checker work. Only
-        # the best `width` admitted bodies can enter the next beam; checking
-        # lower-ranked alternatives after filling it cannot improve that beam.
+        # `width` admitted bodies enter the next beam. The work-profile and
+        # proof-class policies below also reserve exploration opportunities.
         # A rejection never marks a body seen or hides another proof of it.
         generated += len(pending)-old_pending
         pending.sort(key=lambda x: (x[0], len(x[2]), x[3]))
@@ -388,6 +411,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
             pending = policy.order(pending, initial, round_index)
         if neighbourhood is not None:
             pending = neighbourhood.order(pending, hinted, round_index)
+        pending = interleave_premise_classes(pending)
         candidates = []
         processed=0
         for processed, (score, updated, proposal, fingerprint, law, args) in enumerate(pending,1):

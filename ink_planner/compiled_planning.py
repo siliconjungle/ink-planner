@@ -353,7 +353,7 @@ def main():
         automatic_probe=None
         if args.measurement_mode=='auto'and not args.measure_workload and not usage_profiles and not any(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             from ink_knowledge.selection_probes import create
-            try:spec,automatic_probe=create(json.loads(original.read_bytes()))
+            try:spec,automatic_probe=create(json.loads(original.read_bytes()),target=args.target)
             except (ValueError,TypeError,KeyError)as error:spec=None;automatic_probe=dict(reason='typed probes declined: '+str(error))
             if args.target not in {'javascript','rust'}:
                 spec=None;automatic_probe['reason']='no installed offline measurement adapter for '+args.target
