@@ -102,10 +102,15 @@ structural ranking remain unchanged.
 Offline cost profiles use `python -m ink_planner.cost_profiles --knowledge-root
 KNOWLEDGE --rows ROWS.json --target-key TARGET -o PROFILE.json`. Each row names an
 immutable observation and its exact compiled scope. The fitter uses explicit
-workload features, nonnegative prices and intersected per-feature observed domains;
-hosts reject values outside those ranges and never run training probes. These
-axis-aligned ranges do not prevent joint extrapolation between correlated
-features. Fitted models retain their observation
+workload features, nonnegative prices and intersected per-feature observed domains.
+New schema-3 profiles additionally carry each backend's exact convex hull of
+observed feature combinations, including affine equalities for correlated data.
+The shared Rust/Wasm consumer rejects unsupported combinations using bounded
+integer constraints, without training probes or geometric search at execution.
+Construction limits fail authoring rather than widen the domain. Convex support
+limits extrapolation; it does not establish prediction accuracy, confidence or
+profitability. Older schema-1/2 profiles retain only per-feature range checks.
+Fitted models retain their observation
 IDs in knowledge's `store/cost-models`, outside mathematical admission. Structural
 search defaults come from knowledge's `structural-costs.json` and are unmeasured
 hypotheses, never evidence of speed or correctness.
