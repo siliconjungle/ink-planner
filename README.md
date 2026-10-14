@@ -416,3 +416,12 @@ work without adding algorithm-specific features to the compiler. Native and
 browser hosts run the same ABI evaluator. Every factor must have an observed
 domain; a model outside its domain retains CPU. Schema-1 linear profiles remain
 supported, and schema-1 profiles cannot silently include product terms.
+
+Automatic profitability selection keeps the weighted whole-workload gain gate
+and also checks measured phases for regressions. A candidate is excluded when a
+paired bootstrap lower bound exceeds the database policy's tolerated phase loss.
+The bounded comparison error budget is split between overall gain and phase
+regression checks. Noisy or unmeasured losses remain possible; these estimates
+never grant semantic authority. Setup stays in the total lifecycle objective,
+while phase checks use complete call costs. Size-stratified synthetic probes keep
+small calls visible instead of averaging them into a large-input-dominated phase.

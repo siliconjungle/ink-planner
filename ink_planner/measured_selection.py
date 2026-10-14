@@ -70,10 +70,14 @@ def choose(report,profile,baseline,policy,setup_ns=None):
         costs[plan]=[sum(values[p][i]*profile[p]for p in phases)+setup_ns.get(plan,0)for i in range(size)]
     if baseline not in costs:return baseline,dict(reason='baseline lacks paired lifecycle samples',excluded=excluded)
     rng=random.Random(0x4d2a13);comparisons=max(1,len(costs)-1)
-    # Bonferroni guards the bounded set of candidates measured in this batch.
-    quantile=1-(100-policy['confidence_percent'])/100/comparisons
+    # Split the error budget between the overall gain gate and regression
+    # evidence across the measured phases. Neither is a universal timing proof.
+    alpha=(100-policy['confidence_percent'])/100
+    quantile=1-alpha/(2*comparisons)
+    lower_quantile=alpha/(2*comparisons*len(phases))
     resamples=[[rng.randrange(size)for _ in range(size)]for _ in range(policy['bootstrap_repetitions'])]
     estimates={};eligible=[];margin=1-policy['minimum_gain_percent']/100
+    regression_limit=1+policy['maximum_phase_regression_percent']/100
     base=costs[baseline]
     for plan,values in costs.items():
         if plan==baseline:continue
@@ -81,10 +85,19 @@ def choose(report,profile,baseline,policy,setup_ns=None):
         draws=sorted(sum(paired[i]for i in indices)/size for indices in resamples)
         upper=draws[min(len(draws)-1,math.ceil(quantile*len(draws))-1)]
         ratio=sum(paired)/size
-        estimates[plan]=dict(candidate_over_baseline=str(ratio),upper_bound=str(upper),comparisons=comparisons,rounds=size)
-        if upper<margin:eligible.append((ratio,plan))
+        phase_estimates={};regressions=[]
+        for phase in phases:
+            paired_phase=[a/b for a,b in zip(rows[plan][phase],rows[baseline][phase])][:size]
+            phase_draws=sorted(sum(paired_phase[i]for i in indices)/size for indices in resamples)
+            lower=phase_draws[min(len(phase_draws)-1,math.floor(lower_quantile*len(phase_draws)))]
+            phase_estimates[phase]=dict(candidate_over_baseline=str(sum(paired_phase)/size),lower_bound=str(lower))
+            if lower>regression_limit:regressions.append(phase)
+        estimates[plan]=dict(candidate_over_baseline=str(ratio),upper_bound=str(upper),comparisons=comparisons,rounds=size,
+                            phases=phase_estimates,regressive_phases=regressions)
+        if regressions:excluded[plan]='demonstrated complete-call regression in measured phase'
+        elif upper<margin:eligible.append((ratio,plan))
         else:excluded[plan]='paired uncertainty or minimum lifecycle gain guard'
     selected=min(eligible)[1]if eligible else baseline
     return selected,dict(reason='paired complete-lifecycle improvement on selection inputs'if selected!=baseline else'baseline retained; no robust measured lifecycle improvement',
                          baseline_comparable=True,estimates=estimates,excluded=excluded,policy_sha256=identity(policy),
-                         scope='Synthetic probes or supplied development calls; workload-specific profitability only; proofs and target eligibility replay independently')
+                         scope='Synthetic probes or supplied development calls; workload-specific profitability only. Phase checks exclude demonstrated call regressions, not all possible losses; setup remains in the total lifecycle gate. Proofs and target eligibility replay independently')

@@ -21,6 +21,36 @@ class MeasuredSelection(unittest.TestCase):
         self.assertEqual(choose(report([10]*9),{'call:run':1},'base',policy())[0],'base')
         self.assertEqual(choose(report([10]*11),{'call:run':1,'call:other':1},'base',policy())[0],'base')
 
+    def test_large_input_gain_cannot_hide_a_demonstrated_small_input_loss(self):
+        rows=[]
+        for plan,small,large in [('base',100,10000),('unguarded',180,1000),('guarded',100,1100)]:
+            for phase,cost in [('small',small),('large',large)]:
+                rows.append(dict(measurement=plan,phase=phase,complete_call_ns=[str(cost)]*11))
+        selected,receipt=choose(dict(rows=rows),{'small':1000,'large':1000},'base',policy())
+        self.assertEqual(selected,'guarded')
+        self.assertEqual(receipt['estimates']['unguarded']['regressive_phases'],['small'])
+        self.assertEqual(receipt['estimates']['guarded']['regressive_phases'],[])
+        self.assertLess(float(receipt['estimates']['unguarded']['candidate_over_baseline']),.2)
+
+    def test_noisy_phase_loss_is_not_claimed_as_demonstrated(self):
+        rows=[]
+        for plan,small,large in [('base',[100]*11,[10000]*11),('candidate',[80]*6+[130]*5,[1000]*11)]:
+            for phase,costs in [('small',small),('large',large)]:
+                rows.append(dict(measurement=plan,phase=phase,complete_call_ns=list(map(str,costs))))
+        selected,receipt=choose(dict(rows=rows),{'small':1,'large':1},'base',policy())
+        self.assertEqual(selected,'candidate')
+        self.assertGreater(float(receipt['estimates']['candidate']['phases']['small']['candidate_over_baseline']),1)
+        self.assertLess(float(receipt['estimates']['candidate']['phases']['small']['lower_bound']),1)
+
+    def test_comparison_uses_the_shared_round_count_for_every_phase(self):
+        rows=[]
+        for plan,cost in [('base',100),('candidate',60)]:
+            for phase,count in [('short',9),('long',11)]:
+                rows.append(dict(measurement=plan,phase=phase,complete_call_ns=[str(cost)]*count))
+        selected,receipt=choose(dict(rows=rows),{'short':1,'long':1},'base',policy())
+        self.assertEqual(selected,'candidate')
+        self.assertAlmostEqual(float(receipt['estimates']['candidate']['phases']['long']['candidate_over_baseline']),.6)
+
 
 class CandidateIdentity(unittest.TestCase):
     def test_many_cheap_variants_do_not_use_every_slot_before_a_distinct_family(self):
