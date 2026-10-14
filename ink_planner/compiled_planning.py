@@ -29,6 +29,71 @@ def effort_options(args):
         if getattr(args,name) is None:setattr(args,name,value)
     return args
 
+def workload_frequencies(spec):
+    """Price called entry points, including histories and encoded pure calls."""
+    counts={}
+    for phase,rows in spec['phases'].items():
+        if spec.get('schema',1)==2:
+            calls=rows.get('calls',[]) if rows.get('kind')=='history' else []
+            names=[('action:' if call['call']!='__read' else 'call:')+call['call'] for call in calls]
+        else:
+            names=['call:'+row['function'] for row in rows]
+        for name in names:
+            counts[name]=counts.get(name,0)+spec['profile'][phase]
+    return counts
+
+def structural_priority(core,frequencies,prices):
+    """Unmeasured exploration hypothesis, never a profitability verdict.
+
+    Price reachable helpers for the supplied entry workload. New unused helper
+    definitions should not penalise a conservative extension. Collection-bearing
+    immutable arguments suggest potential copying; native measurement decides
+    whether it actually matters for the target and ownership schedule.
+    """
+    program=core['program'];records=program.get('records',{})
+    functions={f['name']:f for f in [*program.get('functions',[]),*program.get('actions',[])]}
+    def collections(ty,active=frozenset()):
+        if isinstance(ty,str):return int(ty in {'String','Int'})
+        if not isinstance(ty,dict):return 0
+        if set(ty)&{'Buffer','Map','Table'}:return None
+        if 'Named'in ty:
+            name=ty['Named']
+            if name in active or len(active)>=64:return 0
+            values=[collections(t,active|{name})for _,t in records.get(name,[])]
+            return None if None in values else sum(values)
+        values=[collections(t,active)for t in (ty.get('Result',[])if 'Result'in ty else [next(iter(ty.values()))])]
+        return None if None in values else sum(values)+int('List'in ty)
+    parameters={name:[collections(t)or 0 for _,t in f['params']]for name,f in functions.items()}
+    costs={};callees={}
+    for name,function in functions.items():
+        score=0;targets=set();pending=[function.get('body',{})]
+        while pending:
+            node=pending.pop()
+            if isinstance(node,dict):
+                if 'Method'in node:score+=prices.get('method:'+node['Method'][1],prices.get('estimate:collection',40))
+                if 'Call'in node:
+                    called,args=node['Call'];score+=prices.get('call:'+called,prices.get('estimate:scalar',1))
+                    if called in functions:
+                        targets.add(called)
+                        score+=sum(count for count,arg in zip(parameters[called],args)
+                            if isinstance(arg,dict)and set(arg)&{'Var','Field'})*prices.get('estimate:immutable_collection_argument',0)
+                if node.get('Var')in functions:targets.add(node['Var'])
+                pending.extend(node.values())
+            elif isinstance(node,list):pending.extend(node)
+        costs[name]=score;callees[name]=targets
+    roots={name:frequencies.get(('action:'if 'kind'in f else'call:')+name,0)for name,f in functions.items()}
+    roots={name:weight for name,weight in roots.items()if weight>0}
+    if not roots:return sum(costs.values())
+    weights={}
+    for name,weight in roots.items():
+        seen=set();pending=[name]
+        while pending:
+            called=pending.pop()
+            if called in seen:continue
+            seen.add(called);weights[called]=weights.get(called,0)+weight
+            pending.extend(callees[called])
+    return sum(costs[name]*weight for name,weight in weights.items())
+
 def code_fingerprint():
     import ink_knowledge,producers
     roots=[('knowledge',Path(ink_knowledge.__file__).parent),('producers',Path(producers.__file__).parent),('planner',Path(__file__).parent)]
@@ -42,7 +107,7 @@ def code_fingerprint():
 
 def protocol_identity(plan):
     if plan and plan.get('compact_commits') is None:plan={k:v for k,v in plan.items()if k!='compact_commits'}
-    if plan and set(plan)<= {'schema','semantics','input_core_sha256','actions','direct_reads','output_publication','snapshot_rows','event_columns','inline_maintenance','compact_commits','columns'} and plan.get('semantics')=='ink-state-protocol-v1' and not any(plan.get(k)for k in ['actions','direct_reads','output_publication','snapshot_rows','event_columns','inline_maintenance','compact_commits','columns']):
+    if plan and set(plan)<= {'schema','semantics','input_core_sha256','actions','direct_reads','output_publication','snapshot_rows','event_columns','event_runs','inline_maintenance','compact_commits','columns'} and plan.get('semantics')=='ink-state-protocol-v1' and not any(plan.get(k)for k in ['actions','direct_reads','output_publication','snapshot_rows','event_columns','event_runs','inline_maintenance','compact_commits','columns']):
         return None
     return plan
 
@@ -183,6 +248,7 @@ class Planner:
             model=None;self.notes.append(dict(source=state['source'],recipe='action-projection',status='declined',reason=str(error)))
         pool={r['representation']:r for _,s in states.values()if s['source']==state['source']and(r:=s.get('representation'))}
         context=dict(state,compiler=str(self.compiler),python=sys.executable,knowledge_root=str(self.root),model=model,
+            frequencies=getattr(self.options,'observed_frequencies',{}),
             usage_profile=getattr(self.options,'observed_resources',None),knowledge_snapshot=self.snapshot,representation_pool=list(pool.values()),emit_target=self.options.target,check_timeout=self.options.check_timeout,
             proposal_timeout=self.options.proposal_timeout,semantic_budget=self.options.semantic_budget,
             semantic_rounds=self.options.semantic_rounds,candidate_limit=self.options.candidate_limit)
@@ -242,28 +308,22 @@ class Planner:
                     yield dict(row,recipe=name)
                 except (ValueError,KeyError,TypeError,OSError,subprocess.TimeoutExpired)as error:
                     invalid.add(key);self.notes.append(dict(source=state['source'],recipe=name,status='declined',reason=str(error)[-2000:]))
-        finally:stream.close()
-        unfinished=False
-        for job in jobs:
-            if job['recipe']['id']not in complete:
-                unfinished=True
-                self.notes.append(dict(source=state['source'],recipe=job['recipe']['id'],status='deferred',reason='planning time budget'))
+        finally:
+            stream.close()
+            # A state/proof limit closes this generator before code following
+            # finally can run. Retain the omitted-family diagnostics on that
+            # path too; absence must never look like completed discovery.
+            unfinished=False
+            for job in jobs:
+                if job['recipe']['id']not in complete:
+                    unfinished=True
+                    self.notes.append(dict(source=state['source'],recipe=job['recipe']['id'],status='deferred',reason='expansion closed before recipe completion'))
         if unfinished:yield dict(status='search-limit',reason='time')
     def priority(self,state):
         # The structural hypothesis orders exploration only. It cannot select a
         # physically different implementation without comparable observations.
         from ink_knowledge.cost_models import structural_prices
-        prices=structural_prices();score=0
-        program=state['core']['program'];frequencies=getattr(self.options,'observed_frequencies',{})
-        pending=[(f.get('body',{}),frequencies.get(('action:' if 'kind' in f else 'call:')+f['name'],1)) for f in [*program.get('functions',[]),*program.get('actions',[])]]
-        while pending:
-            v,weight=pending.pop()
-            if isinstance(v,dict):
-                if 'Method'in v:score+=weight*prices.get('method:'+v['Method'][1],prices.get('estimate:collection',40))
-                if 'Call'in v:score+=weight*prices.get('call:'+v['Call'][0],prices.get('estimate:scalar',1))
-                pending.extend((child,weight) for child in v.values())
-            elif isinstance(v,list):pending.extend((child,weight) for child in v)
-        return score
+        return structural_priority(state['core'],getattr(self.options,'observed_frequencies',{}),structural_prices())
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -326,6 +386,11 @@ def main():
         args.observed_frequencies={}
         for profile in usage_profiles:
             for phase,count in profile['counts'].items():args.observed_frequencies[phase]=args.observed_frequencies.get(phase,0)+count
+        if args.measure_workload:
+            from .offline_measurements import read_workload
+            training,_=read_workload(args.measure_workload)
+            for phase,count in workload_frequencies(training).items():
+                args.observed_frequencies[phase]=args.observed_frequencies.get(phase,0)+count
         args.observed_resources=dict(peak_pending=max((p['peak_pending'] for p in usage_profiles),default=0),peak_pending_bytes=max((p['peak_pending_bytes'] for p in usage_profiles),default=0)) if usage_profiles else None
         initial=dict(schema=1,semantics=SEMANTICS,input_core_sha256=source,steps=[])
         planner=Planner(compiler,original,root,directory,registry['recipes'],digest,args)

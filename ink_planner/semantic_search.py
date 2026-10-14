@@ -195,6 +195,27 @@ def _cost(t,operation_costs):
 
 def key(v): return json.dumps(v, sort_keys=True, separators=(',', ':'))
 
+class ModuleKeys:
+    """Exact JSON keys with bounded reuse of immutable function-body bytes.
+
+    Search rebuilding shares unchanged bodies. Retain the actual object beside
+    its ID to prevent ID reuse from aliasing a different body. This cache changes
+    serialization work only; it supplies neither hashes nor proof authority.
+    """
+    def __init__(self,byte_limit):
+        self.byte_limit=byte_limit;self.entries={};self.bytes=0;self.hits=0;self.misses=0
+    def body(self,body):
+        previous=self.entries.get(id(body))
+        if previous is not None and previous[0]is body:
+            self.hits+=1;return previous[1]
+        self.misses+=1;encoded=key(body);size=len(encoded.encode())
+        if size<=self.byte_limit:
+            if self.bytes+size>self.byte_limit:self.entries.clear();self.bytes=0
+            self.entries[id(body)]=(body,encoded);self.bytes+=size
+        return encoded
+    def module(self,bodies):
+        return '{'+','.join(key(name)+':'+self.body(body)for name,body in sorted(bodies.items()))+'}'
+
 def condition_proof(goal, catalogue, depth=0, active=None, work=None):
     """General bounded proof production: instantiate a checked lemma, or lift
     child proofs through an unchanged operator. Normalization is the fallback.
@@ -318,15 +339,45 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         from ink_knowledge.cost_models import structural_prices
         prices = structural_prices()
         if operation_costs is not None: prices = dict(prices, **operation_costs)
+    # Candidate states share every unchanged immutable function body. Avoid
+    # repricing the whole module for each local proposal. Retain the actual
+    # object alongside its identity so Python ID reuse cannot alias a cache row.
+    # Helper-sensitive schema2 estimates keep their existing complete analysis.
+    body_costs = {};body_profiles = {};analysis_hits = 0;analysis_misses = 0;analysis_bytes = 0
+    def cached(cache,body,calculate):
+        nonlocal analysis_hits,analysis_misses,analysis_bytes
+        ident=id(body);previous=cache.get(ident)
+        if previous is not None and previous[0]is body:
+            analysis_hits+=1;return previous[1]
+        analysis_misses+=1;result=calculate(body)
+        size=len(key(body).encode())
+        if size>memory_bytes//8:return result
+        if len(cache)>=4096 or analysis_bytes+size>memory_bytes//8:
+            body_costs.clear();body_profiles.clear();analysis_bytes=0
+        cache[ident]=(body,result,size);analysis_bytes+=size
+        return result
     def score_bodies(bodies):
         if component_model is not None:
             return component_model.estimate_module(bodies, core_program)['score_ns']
-        return sum(_cost(t, prices) for t in bodies.values())
+        return sum(cached(body_costs,t,lambda body:_cost(body,prices))for t in bodies.values())
     from ink_knowledge.cost_models import structural_components
     dimensions = ('allocation_events', 'traversal_elements', 'copy_bytes')
     component_prices = structural_components()
     profile_cache = {}
+    def body_profile(body):
+        result=dict.fromkeys(dimensions,0)
+        for _,t in positions(body):
+            node=t['node']
+            name=node['Op'][0]if isinstance(node,dict)and'Op'in node else next(iter(node))if isinstance(node,dict)else node
+            for dimension in dimensions:result[dimension]+=component_prices.get(dimension,{}).get(name,0)
+        return result
     def profile(bodies):
+        if component_model is None:
+            result=dict.fromkeys(dimensions,0)
+            for body in bodies.values():
+                values=cached(body_profiles,body,body_profile)
+                for dimension in dimensions:result[dimension]+=values[dimension]
+            return result
         fingerprint = key(bodies)
         if fingerprint not in profile_cache:
             if component_model is not None:
@@ -346,11 +397,12 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                 profile_cache.clear()
                 profile_cache[fingerprint] = result
         return profile_cache[fingerprint]
-    start = subject['functions']; initial = score_bodies(start)
-    frontier = [(initial, start, [])]; best = frontier[0]; seen = {key(start)}
-    prefix_states[hashlib.sha256(key([]).encode()).hexdigest()]=key(start)
+    module_keys=ModuleKeys(memory_bytes//8)
+    start = subject['functions']; initial = score_bodies(start);initial_key=module_keys.module(start)
+    frontier = [(initial, start, [])]; best = frontier[0]; seen = {initial_key}
+    prefix_states[hashlib.sha256(key([]).encode()).hexdigest()]=initial_key
     rejected = 0; checked = 0; exhausted = False
-    generated = 0;memo_bytes=len(key(start).encode());dropped=0
+    generated = 0;memo_bytes=len(initial_key.encode());dropped=0
     while rounds is None or iteration<rounds:
         if time.monotonic()-started>=time_seconds:timed_out=True;break
         iteration+=1
@@ -375,7 +427,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
                         law=objects[ident]
                         if ident in guards and guarded_again(body,path,substitute(guards[ident],args)):continue
                         updated = dict(bodies); updated[name] = replace(body, path, new)
-                        fingerprint = key(updated)
+                        fingerprint = module_keys.module(updated)
                         if fingerprint in seen: continue
                         step = dict(function=name, path=list(path), law=ident, arguments=dict(sorted(args.items())),
                                     premises=['Normalize'] * len(law['conditions']))
@@ -465,6 +517,8 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         frontier = candidates
     receipt = dict(initial_cost=initial, selected_cost=best[0], attempts=checked,
                    rejected=rejected, generated_proposals=generated, exhausted=exhausted, estimate='structural; not measured runtime')
+    receipt['analysis_cache']=dict(hits=analysis_hits,misses=analysis_misses,body_costs=len(body_costs),body_profiles=len(body_profiles),retained_source_bytes=analysis_bytes,scope='Immutable source-body estimates only; bounded serialized source estimate; no applicability or proof authority')
+    receipt['serialization_cache']=dict(hits=module_keys.hits,misses=module_keys.misses,retained_bytes=module_keys.bytes,byte_limit=module_keys.byte_limit,scope='Exact JSON function-body keys; immutable sharing only; no proof authority')
     receipt["memo"]=dict(strategy=strategy,states=len(seen),edges=len(memo_edges),deferred=len(deferred),rounds=iteration,memory_exhausted=memory_exhausted,timed_out=timed_out,retained_memo_bytes=memo_bytes,dropped_proposals=dropped,scope="Exact typed term states; admitted edges only; no hash grants proof authority")
     receipt['matching'] = matcher.receipt()
     receipt['beam_diversity'] = dict(enabled=diverse, dimensions=list(dimensions),

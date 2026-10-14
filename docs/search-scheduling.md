@@ -54,6 +54,14 @@ Replacing a subtree copies ancestors and shares unchanged siblings. Search treat
 terms as immutable. Cache identities, prices, indexes and scheduling do not
 establish proof authority.
 
+Structural cost and diversity estimates also reuse unchanged immutable function
+bodies. The caches retain the exact objects, have entry and serialized-byte
+limits, and do not reuse helper-sensitive schema2 estimates. This avoids
+repricing every function in a large module for each local proposal. Search
+traces bind the original pinned source snapshot even when generated proposals
+use a separate transport view.
+
+
 Receipts record effective budgets, per-family counts and time, checked states,
 rejections, stop reasons and retained serialized bytes. Semantic receipts record
 structural rejections, full matches, cache hits and evictions. Serialized sizes

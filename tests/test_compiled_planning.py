@@ -1,5 +1,65 @@
 import unittest
-from ink_planner.compiled_planning import explore
+from ink_planner.compiled_planning import explore,structural_priority,workload_frequencies
+
+class WorkloadPriorities(unittest.TestCase):
+    def test_phase_labels_bind_actual_calls_and_reachable_helpers(self):
+        spec=dict(profile={'training-a':2,'training-b':3},phases={
+            'training-a':[dict(function='main',args=[])],
+            'training-b':[dict(function='main',args=[]),dict(function='other',args=[])]})
+        self.assertEqual(workload_frequencies(spec),{'call:main':5,'call:other':3})
+        function=lambda name,body:dict(name=name,params=[],body=body)
+        core=dict(program=dict(records={},functions=[
+            function('main',{'Call':['helper',[]]}),
+            function('helper',{'Call':['scalar',[]]}),
+            function('unused',{'Method':[{'Var':'xs'},'expensive',[]]})]))
+        prices={'estimate:scalar':1,'estimate:collection':100}
+        self.assertEqual(structural_priority(core,{'call:main':5},prices),10)
+        self.assertEqual(structural_priority(core,{},prices),102)
+        # Recursive reachability is finite; it does not unfold an unbounded
+        # runtime call count or claim a timing prediction.
+        core['program']['functions'][1]['body']={'Call':['main',[]]}
+        self.assertEqual(structural_priority(core,{'call:main':5},prices),10)
+
+    def test_copy_hypothesis_prices_immutable_fields_and_excludes_owners(self):
+        def fixture(ty):
+            return dict(program=dict(records={'Input':[['payload',ty]]},functions=[
+                dict(name='main',params=[['input',{'Named':'Input'}]],body={'Call':['helper',[{'Var':'input'}]]}),
+                dict(name='helper',params=[['input',{'Named':'Input'}]],body={'Num':0})]))
+        prices={'estimate:scalar':1,'estimate:immutable_collection_argument':40}
+        self.assertEqual(structural_priority(fixture({'List':'U32'}),{'call:main':1},prices),41)
+        self.assertEqual(structural_priority(fixture({'Buffer':'U32'}),{'call:main':1},prices),1)
+        self.assertEqual(structural_priority(fixture('U32'),{'call:main':1},prices),1)
+
+class ExpansionDiagnostics(unittest.TestCase):
+    def test_state_limit_close_records_unfinished_recipe_families(self):
+        import tempfile,time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from ink_knowledge import canonical
+        from ink_planner.compiled_planning import Planner
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);planner=Planner.__new__(Planner)
+            planner.directory=planner.root=root;planner.compiler=root/'compiler'
+            planner.compiler_hash='compiler';planner.code_hash='code';planner.snapshot='snapshot'
+            planner.registry_digest='registry';planner.deadline=time.monotonic()+5
+            planner.options=SimpleNamespace(target='rust',registry=None,check_timeout=1,proposal_timeout=1,semantic_budget=1,semantic_rounds=1,candidate_limit=4,memory_bytes=1000000)
+            planner.recipes=[dict(id=name,inputs=['core']) for name in ['fast','still-working','not-started']]
+            planner.notes=[];planner.recipe_cache_hits=0;planner.model=lambda _:None
+            closed=[]
+            def stream(jobs,*args):
+                try:
+                    yield jobs[0],dict(kind='line',raw=canonical(dict(recipe='fast',registry_sha256='registry')))
+                    yield jobs[0],dict(kind='line',raw=canonical(dict(status='proposal',label='candidate',step=dict(kind='physical',package={}))))
+                finally:closed.append(True)
+            state=dict(source='source',core=dict(program={}))
+            with patch('ink_planner.recipe_streams.run',stream):
+                expansion=planner.expand(state,{})
+                self.assertEqual(next(expansion)['recipe'],'fast');expansion.close()
+            self.assertEqual(closed,[True])
+            deferred={x['recipe'] for x in planner.notes if x['status']=='deferred'}
+            self.assertEqual(deferred,{'fast','still-working','not-started'})
+            self.assertFalse(any(x['status']=='visited' for x in planner.notes))
 
 class RecursivePlans(unittest.TestCase):
     def test_maintained_roles_are_distinct_from_baseline_and_each_other(self):
