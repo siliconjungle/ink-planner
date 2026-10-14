@@ -215,10 +215,11 @@ def discover(source, clang, directory):
 
 
 def discover_facts(source):
-    from producers.word_facts import analyse, candidates
+    from producers.word_facts import analyse_candidates
     from dataclasses import asdict
-    return list(candidates(source)), dict(facts=asdict(analyse(source)),
-                                         authority='untrusted analysis; independent equality proof required')
+    facts, proposals = analyse_candidates(source)
+    return proposals, dict(facts=asdict(facts),
+                           authority='untrusted analysis; independent equality proof required')
 
 
 def main():
