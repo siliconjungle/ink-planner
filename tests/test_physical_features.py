@@ -15,6 +15,15 @@ def observation(n=10):
     return dict(cohort=cohort(),entry='entry',fixture_id='fixture',components={k:n if k=='loop_iterations'else 1 if k in('invocations','allocation_events')else 0 for k in COMPONENTS},known={k:True for k in COMPONENTS},bindings={k:dict(sha256='4'*64)for k in BINDINGS})
 
 class PhysicalFeatureTests(unittest.TestCase):
+    def test_validated_prices_do_not_alias_caller_owned_dictionaries(self):
+        data=model(); original=copy.deepcopy(data);prices=PhysicalPrices(data)
+        expected=prices.score(observation())
+        data['weights']['loop_iterations']=999
+        data['cohort']['host']['engine']='changed'
+        data['training']['scope']='changed'
+        self.assertEqual(prices.score(observation()),expected)
+        self.assertEqual(prices.data,original)
+
     def test_finite_ns_prices_not_boolean_or_unbounded(self):
         self.assertEqual(PhysicalPrices(model()).score(observation())[0],3.75)
         for bad in(True,-1,float('nan'),float('inf'),10**10):

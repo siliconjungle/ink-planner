@@ -119,6 +119,23 @@ class TargetComponentTests(unittest.TestCase):
         self.assertEqual(r['components']['traversal_elements'], 10)
         self.assertTrue(any('upper bound' in a for a in r['assumptions']))
 
+    def test_unknown_short_circuit_left_does_not_make_right_literal_the_result(self):
+        heavy = mapped(free('xs', L), op('binary:+', bound(), word(1)))
+        light = mapped(free('ys', L), op('binary:+', bound(), word(1)))
+        p = program(signature('entry', [['xs', {'List':'U32'}], ['ys', {'List':'U32'}], ['gate','Bool']], {'List':'U32'}))
+        for operator in ('binary:&&', 'binary:||'):
+            for right in (False, True):
+                condition = op(operator, free('gate', B), term(B, {'Bool':right}), sort=B)
+                for a,b in ((heavy,light),(light,heavy)):
+                    r = model().estimate_function('entry', {'entry':op('call:choose',condition,a,b,sort=L)}, p)
+                    # x && false and x || true are constant; x && true and
+                    # x || false remain unknown and must price both branches.
+                    absorbing = right == (operator == 'binary:||')
+                    chosen = a if right else b
+                    expected = (7 if chosen is heavy else 3) if absorbing else 7
+                    with self.subTest(operator=operator,right=right,left_heavy=a is heavy):
+                        self.assertEqual(r['components']['traversal_elements'], expected)
+
     def test_recursive_unknown_callback_capture_and_deep_fallback(self):
         p = program(signature('entry', [['xs', {'List': 'U32'}]], {'List': 'U32'}))
         cases = [op('call:entry', free('xs', L), sort=L),

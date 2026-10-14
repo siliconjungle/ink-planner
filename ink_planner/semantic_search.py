@@ -641,11 +641,15 @@ class SelectionChecker:
                         del self.sessions[prior]
                         self.sessions[roots_key] = session
                         extended = True
-                    elif result.get('error') != 'knowledge view schema/size limit':
+                    elif result.get('error') not in (
+                        'knowledge view schema/size limit', 'checker session snapshot mismatch'
+                    ):
                         self.rejected_closures += 1
                         self.last_error = 'closure: admission rejected: ' + str(result.get('error'))[:400]
                         return False
-                    # A full union does not make a separately bounded closure invalid.
+                    # A full union or an older pinned transport snapshot does
+                    # not invalidate the new closure. Open a fresh session and
+                    # recheck its complete evidence; never weaken core admission.
                 if not extended:
                     if len(self.sessions) >= 8:
                         first = next(iter(self.sessions))

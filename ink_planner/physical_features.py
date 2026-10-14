@@ -63,8 +63,11 @@ class PhysicalPrices:
         training = data['training']
         if not isinstance(training, dict) or set(training) != {'protocol_sha256', 'observations_sha256', 'scope'} or not _digest(training['protocol_sha256']) or not _digest(training['observations_sha256']) or not isinstance(training['scope'], str) or len(training['scope']) > 4096:
             raise ValueError('physical training provenance')
-        self.weights = weights
-        self.data = data
+        # Freeze the validated input snapshot against later caller mutations,
+        # including nested host and training provenance dictionaries.
+        self.data = json.loads(json.dumps(data))
+        self.cohort = self.data['cohort']
+        self.weights = self.data['weights']
 
     def score(self, observation):
         if observation['cohort'] != self.cohort:

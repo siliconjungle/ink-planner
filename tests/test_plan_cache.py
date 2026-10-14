@@ -2,6 +2,29 @@ import tempfile, unittest
 from pathlib import Path
 from ink_planner import plan_cache
 class PlanCache(unittest.TestCase):
+    def test_compressed_proof_data_invalidates_search_and_corpus_context(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        from ink_planner.corpus import execution_context
+        from ink_knowledge import Store
+        import producers
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);knowledge=root/'knowledge';Store.publish(knowledge,[])
+            package=knowledge/'producers';data=package/'data';data.mkdir(parents=True)
+            (package/'__init__.py').write_text('')
+            proof=data/'proof.json.gz';proof.write_bytes(b'first compressed proof')
+            compiler=root/'compiler';compiler.write_text('compiler')
+            core=root/'core';core.write_text('core')
+            manifest=root/'manifest';manifest.write_text('manifest')
+            snapshot=knowledge/'store/snapshot.json'
+            args=SimpleNamespace(knowledge_root=knowledge,compiler=compiler,manifest=manifest,
+                                 target='javascript',planning_effort='quick',timeout=60)
+            with patch.object(producers,'__file__',str(package/'__init__.py')):
+                first=plan_cache.fingerprint(compiler,core,snapshot,None,10,2)
+                context=execution_context(args)
+                proof.write_bytes(b'changed compressed proof')
+                self.assertNotEqual(first,plan_cache.fingerprint(compiler,core,snapshot,None,10,2))
+                self.assertNotEqual(context,execution_context(args))
     def test_every_explicit_input_invalidates_and_storage_is_bounded(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);paths=[root/name for name in ['compiler','core','snapshot','cost','context']]

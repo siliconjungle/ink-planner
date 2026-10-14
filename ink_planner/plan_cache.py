@@ -12,7 +12,8 @@ def fingerprint(compiler, core, snapshot, cost_model, budget, rounds, context=No
     code={}
     for label,root in [('planner',Path(__file__).parent),('knowledge',Path(ink_knowledge.__file__).parent),('producers',Path(producers.__file__).parent)]:
         for path in sorted(root.rglob('*.py')):code[label+'/'+str(path.relative_to(root))]=digest(path)
-        for path in sorted((root/'data').rglob('*.json')):code[label+'/'+str(path.relative_to(root))]=digest(path)
+        for path in sorted((root/'data').rglob('*')):
+            if path.is_file():code[label+'/'+str(path.relative_to(root))]=digest(path)
     for name in ['structural-costs.json','producer-catalog.json','implementation-recipes.json','property-probes.json']:
         code['knowledge/'+name]=hashlib.sha256(files('ink_knowledge').joinpath(name).read_bytes()).hexdigest()
     key=dict(schema=1,compiler=digest(compiler),core=digest(core),snapshot=digest(snapshot),
