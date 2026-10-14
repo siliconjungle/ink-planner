@@ -91,6 +91,41 @@ class ExpansionDiagnostics(unittest.TestCase):
                 self.assertEqual(note['buffered_proposals'],buffered)
                 self.assertEqual(note['dropped_proposals'],dropped)
                 self.assertEqual(note['ready_families'],2)
+    def test_buffered_families_share_bounded_delivery_after_first_responses(self):
+        import itertools,tempfile,time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from ink_knowledge import canonical
+        from ink_planner.compiled_planning import Planner
+        with tempfile.TemporaryDirectory()as temporary:
+            root=Path(temporary);planner=Planner.__new__(Planner)
+            planner.directory=planner.root=root;planner.compiler=root/'compiler'
+            planner.compiler_hash='compiler';planner.code_hash='code';planner.snapshot='snapshot'
+            planner.registry_digest='registry';planner.deadline=time.monotonic()+5
+            planner.options=SimpleNamespace(target='rust',registry=None,check_timeout=1,proposal_timeout=1,
+                semantic_budget=1,semantic_rounds=1,candidate_limit=32,memory_bytes=1000000,expansion_limit=6)
+            planner.recipes=[dict(id=name,inputs=['core'])for name in ['fast','composed','slow']]
+            planner.notes=[];planner.recipe_cache_hits=0;planner.recipe_dispatches={};planner.model=lambda _:None
+            def stream(jobs,*args,**kwargs):
+                def line(row):return dict(kind='line',raw=canonical(row))
+                for job in jobs:yield job,line(dict(recipe=job['recipe']['id'],registry_sha256='registry'))
+                for family,count in [(0,25),(1,3)]:
+                    for index in range(count):
+                        yield jobs[family],line(dict(status='proposal',label=f'{family}/{index}',
+                            step=dict(kind='physical',package={})))
+                yield jobs[2],line(dict(status='declined',label='slow',reason='no applicable proposal'))
+                for job in jobs:yield job,dict(kind='done',complete=True,cached=True,reason=None,elapsed_seconds='0')
+            with patch('ink_planner.recipe_streams.run',stream):
+                proposals=planner.expand(dict(source='source',core=dict(program={})),{})
+                try:rows=list(itertools.islice(proposals,6))
+                finally:proposals.close()
+            # The third composed prefix is delivered within six proposals even
+            # though twenty-five fast-family rows arrived first.
+            self.assertEqual([r['label']for r in rows],['0/0','1/0','0/1','1/1','0/2','1/2'])
+            note=next(n['diagnostics']for n in planner.notes if n['recipe']=='discovery-scheduling')
+            self.assertEqual(note['buffered_proposals'],26);self.assertEqual(note['dropped_proposals'],0)
+
     def test_state_limit_close_records_unfinished_recipe_families(self):
         import tempfile,time
         from pathlib import Path

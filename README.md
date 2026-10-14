@@ -521,3 +521,9 @@ without first consuming every local alternative. Ordinary modular CLI streaming
 still delivers all admitted alternatives unless this flag is set. Both modes
 share the same checker budget and deadline. The selected prefixes are search
 hypotheses; measured whole-workload selection remains a separate gate.
+
+After reserving the first response from each eligible recipe, compiled planning
+releases buffered proposals round-robin between recipe families and FIFO within
+each family. An early fast producer cannot consume the entire per-state allowance
+before a later family's second or third composed prefix. The byte bound, global
+search limits and complete-chain proof checks remain unchanged.

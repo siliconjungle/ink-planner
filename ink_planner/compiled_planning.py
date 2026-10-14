@@ -282,11 +282,19 @@ class Planner:
         # fast stream can fill the parent allowance before another recipe has
         # its first result, and child rewrites may erase that recipe's match.
         # Buffer bytes, not parsed proof trees; all released proposals still
-        # pass the ordinary complete-chain checker in explore().
+        # pass the ordinary complete-chain checker in explore(). Drain families
+        # round-robin so an early flood cannot hide later composed prefixes.
         from collections import deque
-        waiting=deque();ready=set();waiting_bytes=0;buffered=0;dropped=0
+        waiting={};waiting_families=deque();ready=set();waiting_bytes=0;buffered=0;dropped=0
         first_responses=bool(getattr(self.options,'expansion_limit',32))
         waiting_limit=min(16_000_000,getattr(self.options,'memory_bytes',512_000_000)//8)
+        def take_waiting():
+            nonlocal waiting_bytes
+            name=waiting_families.popleft();queue=waiting[name];raw=queue.popleft()
+            if queue:waiting_families.append(name)
+            else:del waiting[name]
+            waiting_bytes-=len(raw)
+            return name,raw
         def proposal(raw,name):
             row=json.loads(raw)
             if row['status']=='plan':row=dict(status='proposal',label=row['label'],steps=row['package']['steps'])
@@ -294,7 +302,7 @@ class Planner:
         try:
             for job,event in stream:
                 while waiting and len(ready)==len(jobs):
-                    name,raw=waiting.popleft();waiting_bytes-=len(raw)
+                    name,raw=take_waiting()
                     yield proposal(raw,name)
                 recipe=job['recipe'];name=recipe['id'];key=job['key']
                 if event['kind']=='done':
@@ -333,7 +341,8 @@ class Planner:
                     previously_ready=name in ready;ready.add(name)
                     if first_responses and previously_ready and len(ready)<len(jobs):
                         if waiting_bytes+size<=waiting_limit:
-                            waiting.append((name,event['raw']));waiting_bytes+=size;buffered+=1
+                            if name not in waiting:waiting[name]=deque();waiting_families.append(name)
+                            waiting[name].append(event['raw']);waiting_bytes+=size;buffered+=1
                         else:dropped+=1
                         continue
                     yield dict(row,recipe=name)
@@ -341,13 +350,14 @@ class Planner:
                     ready.add(name)
                     invalid.add(key);self.notes.append(dict(source=state['source'],recipe=name,status='declined',reason=str(error)[-2000:]))
             while waiting:
-                name,raw=waiting.popleft();waiting_bytes-=len(raw)
+                name,raw=take_waiting()
                 yield proposal(raw,name)
         finally:
             stream.close()
             self.notes.append(dict(source=state['source'],recipe='discovery-scheduling',status='diagnostic',
                 diagnostics=dict(first_response_reservation=first_responses,ready_families=len(ready),eligible_families=len(jobs),
                     buffered_proposals=buffered,dropped_proposals=dropped,buffer_byte_limit=waiting_limit,
+                    buffered_order='round-robin recipe families; FIFO within each family',
                     scope='Bounded proposal ordering only; full-chain admission and global resource limits unchanged')))
             # A state/proof limit closes this generator before code following
             # finally can run. Retain the omitted-family diagnostics on that
