@@ -276,4 +276,65 @@ class TargetComponentTests(unittest.TestCase):
                          lambda _: True, operation_costs=model(weights=weights), core_program=p)
         self.assertEqual(len(apps), 1); self.assertEqual(r['selected_components']['components']['allocation_events'], 1)
 
+class AgreeingBranchFacts(unittest.TestCase):
+    def setup_case(self):
+        self.heavy = mapped(free('xs', L), op('binary:+', bound(), word(1)))
+        self.light = mapped(free('ys', L), op('binary:+', bound(), word(1)))
+        self.p = program(signature('entry', [['gate', 'Bool'], ['xs', {'List':'U32'}], ['ys', {'List':'U32'}]], {'List':'U32'}))
+
+    def test_agreeing_boolean_branches_select_only_the_reachable_outer_arm(self):
+        self.setup_case()
+        for left, right in [(True,True),(False,False),(True,False),(False,True)]:
+            condition=op('call:choose', free('gate',B),term(B,{'Bool':left}),term(B,{'Bool':right}),sort=B)
+            body=op('call:choose', condition, self.light, self.heavy,sort=L)
+            result=model().estimate_function('entry',{'entry':body},self.p)
+            self.assertTrue(result['complete'])
+            self.assertEqual(result['components']['traversal_elements'],3 if left==right and left else 7)
+
+    def test_agreeing_result_keeps_the_cost_of_evaluating_its_condition_and_arms(self):
+        self.setup_case()
+        expensive_true=op('apply',lam(term(B,{'Bool':True}),L),self.heavy,sort=B)
+        condition=op('call:choose',free('gate',B),expensive_true,term(B,{'Bool':True}),sort=B)
+        result=model().estimate_function('entry',{'entry':op('call:choose',condition,self.light,self.heavy,sort=L)},self.p)
+        # Either branch can produce true, but producing it may still map xs.
+        self.assertEqual(result['components']['traversal_elements'],7+3)
+        self.assertEqual(result['components']['allocation_events'],2)
+        self.assertEqual(result['components']['branches'],2)
+
+    def test_agreeing_values_survive_current_helper_parameters(self):
+        self.setup_case()
+        self.p['functions'].append(signature('forward',[['flag','Bool']],'Bool'))
+        body=op('call:choose',free('gate',B),term(B,{'Bool':True}),term(B,{'Bool':True}),sort=B)
+        bodies={'forward':free('flag',B),'entry':op('call:choose',op('call:forward',body,sort=B),self.light,self.heavy,sort=L)}
+        result=model().estimate_function('entry',bodies,self.p)
+        self.assertEqual(result['components']['traversal_elements'],3)
+        self.assertEqual(len(result['definitions_consumed']),2)
+
+    def test_branch_selected_closures_remain_explicitly_unresolved(self):
+        self.setup_case()
+        callback=lam(op('binary:+',bound(),word(1)))
+        chosen=op('call:choose',free('gate',B),callback,callback,sort=callback['sort'])
+        result=model().estimate_function('entry',{'entry':op('method:map',free('ys',L),chosen,sort=L)},self.p)
+        self.assertFalse(result['complete'])
+        self.assertTrue(any('branch-selected callback' in r for r in result['unknown_reasons']))
+
+    def test_actual_checked_source_and_reference_execution_match_the_known_branch(self):
+        compiler=Path(os.environ.get('INK_COMPILER',ROOT/'target/debug/ink')).resolve()
+        with tempfile.TemporaryDirectory() as temporary:
+            d=Path(temporary);source=d/'branch.ink';core=d/'core.json';subject=d/'subject.json';args=d/'args.json'
+            source.write_text('module BranchCosts;fn run(gate:Bool,xs:List<u32>,ys:List<u32>)->List<u32>{return choose(choose(gate,true,true),ys.map(fn(x)=>x+1),xs.map(fn(x)=>x+1));}')
+            for command in [('emit-core',source,'-o',core),('emit-semantic',core,'--core','-o',subject)]:
+                run=subprocess.run([str(compiler),*map(str,command)],capture_output=True,text=True,timeout=60)
+                self.assertEqual(run.returncode,0,run.stderr)
+            for gate in [False,True]:
+                args.write_text(json.dumps([gate,list(range(7)),[10,20,30]]))
+                run=subprocess.run([str(compiler),'run',str(core),'run',str(args),'--core'],capture_output=True,text=True,timeout=60)
+                self.assertEqual(run.returncode,0,run.stderr)
+                self.assertEqual(json.loads(run.stdout),[11,21,31])
+            m=model(cardinality=dict(default=10,by_parameter={'xs':7,'ys':3}))
+            result=m.estimate_function('run',json.loads(subject.read_text())['functions'],json.loads(core.read_text())['program'])
+            self.assertTrue(result['complete'])
+            self.assertEqual(result['components']['traversal_elements'],3)
+
+
 if __name__ == '__main__': unittest.main()
