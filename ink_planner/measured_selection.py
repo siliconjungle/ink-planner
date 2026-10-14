@@ -52,6 +52,8 @@ def choose(report,profile,baseline,policy,setup_ns=None):
 
     Process means receive equal weight. This estimates profitability on these
     inputs; repeated rounds are not additional independent process launches.
+    Each measured phase must also have an upper cost bound within the declared
+    tolerance. Failure to demonstrate a loss is not evidence of non-regression.
     Full source proof replay remains separate.
     """
     rows={};excluded={};setup_ns=setup_ns or {}
@@ -106,22 +108,25 @@ def choose(report,profile,baseline,policy,setup_ns=None):
         paired={p:[a/b for a,b in zip(values[p],base[p])]for p in processes}
         distribution=draws(paired)
         upper=distribution[min(len(distribution)-1,math.ceil(quantile*len(distribution))-1)]
-        ratio=mean(paired);phase_estimates={};regressions=[]
+        ratio=mean(paired);phase_estimates={};regressions=[];uncertain=[]
         for phase in phases:
             paired_phase={p:[a/b for a,b in zip(rows[plan][p][phase],rows[baseline][p][phase])][:sizes[p]]for p in processes}
             distribution=draws(paired_phase)
             lower=distribution[min(len(distribution)-1,math.floor(lower_quantile*len(distribution)))]
-            phase_estimates[phase]=dict(candidate_over_baseline=str(mean(paired_phase)),lower_bound=str(lower),
+            phase_upper=distribution[min(len(distribution)-1,math.ceil((1-lower_quantile)*len(distribution))-1)]
+            phase_estimates[phase]=dict(candidate_over_baseline=str(mean(paired_phase)),lower_bound=str(lower),upper_bound=str(phase_upper),
                 process_ratios={str(p):str(sum(v)/len(v))for p,v in paired_phase.items()})
             if lower>regression_limit:regressions.append(phase)
+            elif phase_upper>regression_limit:uncertain.append(phase)
         estimates[plan]=dict(candidate_over_baseline=str(ratio),upper_bound=str(upper),comparisons=comparisons,
                             processes=process_count,rounds_per_process={str(p):sizes[p]for p in processes},
                             process_ratios={str(p):str(sum(v)/len(v))for p,v in paired.items()},
-                            phases=phase_estimates,regressive_phases=regressions)
+                            phases=phase_estimates,regressive_phases=regressions,uncertain_phases=uncertain)
         if regressions:excluded[plan]='demonstrated complete-call regression in measured phase'
+        elif uncertain:excluded[plan]='phase upper cost bound exceeds tolerated regression'
         elif upper<margin:eligible.append((ratio,plan))
         else:excluded[plan]='paired uncertainty or minimum lifecycle gain guard'
     selected=min(eligible)[1]if eligible else baseline
     return selected,dict(reason='paired complete-lifecycle improvement on selection inputs'if selected!=baseline else'baseline retained; no robust measured lifecycle improvement',
                          baseline_comparable=True,estimates=estimates,excluded=excluded,policy_sha256=identity(policy),
-                         scope='Synthetic probes or supplied development calls; workload-specific profitability only. Hierarchical process/paired-round bootstrap; phase checks exclude demonstrated call regressions, not all possible losses. Per-process setup remains in the total lifecycle gate. Proofs and target eligibility replay independently')
+                         scope='Synthetic probes or supplied development calls; workload-specific profitability only. Hierarchical process/paired-round bootstrap; each measured phase must meet the policy tolerance at its upper bootstrap cost bound. Finite samples and unmeasured inputs still permit losses. Per-process setup remains in the total lifecycle gate. Proofs and target eligibility replay independently')

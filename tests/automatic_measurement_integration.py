@@ -34,6 +34,14 @@ with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-'
     assert acquisition['processes']==policy()['processes']==3,acquisition
     assert {row['process']for row in acquisition['rows']}=={0,1,2},acquisition
     assert all(e['processes']==3 for e in receipt['selection']['uncertainty_guard']['estimates'].values())
+    guard=receipt['selection']['uncertainty_guard']
+    chosen=receipt['selection']['selected_measurement']
+    if chosen in guard['estimates']:
+        estimate=guard['estimates'][chosen]
+        assert not estimate['regressive_phases'] and not estimate['uncertain_phases'],estimate
+        tolerance=1+policy()['maximum_phase_regression_percent']/100
+        assert all(float(p['upper_bound'])<=tolerance for p in estimate['phases'].values()),estimate
+
     assert shortlist['allocation']=='first admitted recipe ancestry before repeated family variants',shortlist
     assert set(shortlist['measured_families'])<=set(shortlist['admitted_families']),shortlist
     assert 'semantic-laws' in shortlist['measured_families'],shortlist

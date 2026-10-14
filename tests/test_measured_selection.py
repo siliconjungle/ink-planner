@@ -32,15 +32,37 @@ class MeasuredSelection(unittest.TestCase):
         self.assertEqual(receipt['estimates']['guarded']['regressive_phases'],[])
         self.assertLess(float(receipt['estimates']['unguarded']['candidate_over_baseline']),.2)
 
-    def test_noisy_phase_loss_is_not_claimed_as_demonstrated(self):
+    def test_uncertain_phase_loss_cannot_be_hidden_by_total_gain(self):
         rows=[]
         for plan,small,large in [('base',[100]*11,[10000]*11),('candidate',[80]*6+[130]*5,[1000]*11)]:
             for phase,costs in [('small',small),('large',large)]:
                 rows.append(dict(measurement=plan,phase=phase,complete_call_ns=list(map(str,costs))))
         selected,receipt=choose(dict(rows=rows),{'small':1,'large':1},'base',policy())
-        self.assertEqual(selected,'candidate')
+        self.assertEqual(selected,'base')
+        self.assertEqual(receipt['estimates']['candidate']['regressive_phases'],[])
+        self.assertEqual(receipt['estimates']['candidate']['uncertain_phases'],['small'])
+        self.assertGreater(float(receipt['estimates']['candidate']['phases']['small']['upper_bound']),1)
         self.assertGreater(float(receipt['estimates']['candidate']['phases']['small']['candidate_over_baseline']),1)
         self.assertLess(float(receipt['estimates']['candidate']['phases']['small']['lower_bound']),1)
+
+    def test_phase_uncertainty_respects_independent_processes_and_database_tolerance(self):
+        rows=[]
+        for process,small in enumerate([90,100,110]):
+            for plan,phase,cost in [('base','small',100),('base','large',10000),
+                                    ('candidate','small',small),('candidate','large',1000)]:
+                rows.append(dict(measurement=plan,phase=phase,process=process,complete_call_ns=[str(cost)]*11))
+        data=dict(processes=3,rows=rows)
+        selected,receipt=choose(data,{'small':1,'large':1},'base',policy())
+        self.assertEqual(selected,'base')
+        phase=receipt['estimates']['candidate']['phases']['small']
+        self.assertAlmostEqual(float(phase['candidate_over_baseline']),1)
+        self.assertLess(float(phase['lower_bound']),1)
+        self.assertGreater(float(phase['upper_bound']),1)
+        # A caller's explicit tolerated loss remains policy data; default zero
+        # must not acquire that tolerance from a good aggregate or noisy phase.
+        tolerant=dict(policy(),maximum_phase_regression_percent=11)
+        self.assertEqual(choose(data,{'small':1,'large':1},'base',tolerant)[0],'candidate')
+        self.assertEqual(choose(dict(processes=3,rows=list(reversed(rows))),{'small':1,'large':1},'base',policy())[0],'base')
 
     def test_comparison_uses_the_shared_round_count_for_every_phase(self):
         rows=[]
