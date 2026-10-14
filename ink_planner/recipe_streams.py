@@ -7,21 +7,28 @@ import os,signal,subprocess,time
 from collections import deque
 
 
+def priority(job):
+    return (job.get('recipe')or{}).get('priority',0)
+
+
 def interleave_stages(jobs):
     """Give each published stage a dispatch opportunity before its second job.
 
     Stage names are untrusted scheduling data, never applicability or authority.
-    Keep within-stage order and every job; jobs without metadata retain FIFO.
+    Smaller database priorities run first. Interleave stages within each priority;
+    keep within-stage order and every job. Missing metadata retains FIFO.
     """
     groups={}
     for job in jobs:
         stage=(job.get('recipe')or{}).get('stage','')
-        groups.setdefault(stage,deque()).append(job)
+        groups.setdefault(priority(job),{}).setdefault(stage,deque()).append(job)
     ordered=[]
-    while groups:
-        for stage in list(groups):
-            ordered.append(groups[stage].popleft())
-            if not groups[stage]:del groups[stage]
+    for level in sorted(groups):
+        stages=groups[level]
+        while stages:
+            for stage in list(stages):
+                ordered.append(stages[stage].popleft())
+                if not stages[stage]:del stages[stage]
     return ordered
 
 
@@ -61,6 +68,10 @@ def run(jobs,workers,deadline,timeout,byte_limit=128_000_000):
         while pending or active:
             if time.monotonic()>=deadline:break
             while pending and len(active)<workers:
+                # Finish earlier priorities before a fast later family can spend
+                # the consumer's entire expansion budget. This affects search
+                # order only; all proposals still need independent admission.
+                if active and priority(pending[0])>priority(active[0]['job']):break
                 active.append(launch(pending.popleft()))
             progress=False
             for state in list(active):

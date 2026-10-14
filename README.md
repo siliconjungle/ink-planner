@@ -351,3 +351,34 @@ compares fixed choices and migration-charged schedules, optionally enforcing
 measured memory/pause budgets. Counterfactual windows require the same logical
 prefix and at least three measurements per variant. Hindsight, choice gaps and
 execution residuals are diagnostics, never a runtime policy or proof premise.
+
+### Composition budgets and complete implementation identities
+
+Recursive compilation now limits proof attempts from each parent state before
+expanding its admitted children: quick/balanced/thorough use 8/32/128 attempts.
+`--expansion-limit 0` reproduces exhaustive parent enumeration for comparison.
+Recipes may publish an integer `priority` from -100 to 100 (default zero).
+Lower priorities finish before later groups launch; stages still interleave
+within each group. Process and overall deadlines remain in force. This lets an
+expensive proof author run before quick families consume the parent's budget.
+Priority grants neither proof admission nor profitability and cannot force
+selection. The installed maintained-fold recipe currently has priority -10.
+The limit is search scheduling only. Every edge still replays its whole chain;
+truncated parents appear in `truncated_expansions`, and a truncated frontier is
+reported as `expansion-budget`, never a fixed point. The bound closes each
+producer stream before opening another, preserving the worker/process budget.
+It can miss a later proposal, so corpus evaluation must assess both coverage and
+selected performance before treating it as an improvement.
+
+Measurement deduplication includes maintained views and state protocols. These
+can change execution without changing source identity and must not disappear as
+baseline duplicates. Static maintained-fold coverage counts the final package,
+because a later maintained step replaces the previous one.
+
+Cost-profile schema 2 adds bounded nonnegative products of two or three
+workload features. `ink_knowledge/cost-model-basis.json` selects the fitted basis;
+the initial product is input elements times iterations. This prices repeated
+work without adding algorithm-specific features to the compiler. Native and
+browser hosts run the same ABI evaluator. Every factor must have an observed
+domain; a model outside its domain retains CPU. Schema-1 linear profiles remain
+supported, and schema-1 profiles cannot silently include product terms.

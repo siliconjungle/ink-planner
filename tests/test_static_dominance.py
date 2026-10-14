@@ -22,3 +22,9 @@ class StaticDominance(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class ReplacementCoverage(unittest.TestCase):
+    def test_repeated_packages_do_not_outvote_more_maintained_keeps(self):
+        repeated=plan('maintained','maintained','maintained',views=1)
+        both=plan('maintained',views=2)
+        self.assertEqual(choose([repeated,both],[{},{}]),1)

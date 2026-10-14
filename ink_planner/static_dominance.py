@@ -22,7 +22,9 @@ def dominant(package):
 
 def coverage(package):
     """Keeps maintained by the plan."""
-    return sum(len(step['package'].get('views', [])) for step in package['steps'] if step.get('kind') == 'maintained')
+    # A maintained step replaces the active package; it does not accumulate views.
+    last = next((step for step in reversed(package['steps']) if step.get('kind') == 'maintained'), None)
+    return len(last['package'].get('views', [])) if last else 0
 
 
 def choose(packages, states):

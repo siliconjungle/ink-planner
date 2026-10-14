@@ -19,9 +19,9 @@ class CheckerBudgetError(ValueError):
 
 # Explicit command-line budgets override these named, bounded offline efforts.
 EFFORTS={
-    'quick':dict(budget=2048,state_limit=32,time_seconds=8,semantic_budget=2048,semantic_seconds=8,proposal_timeout=8),
-    'balanced':dict(budget=32768,state_limit=512,time_seconds=60,semantic_budget=8192,semantic_seconds=30,proposal_timeout=60),
-    'thorough':dict(budget=131072,state_limit=4096,time_seconds=300,semantic_budget=32768,semantic_seconds=120,proposal_timeout=180),
+    'quick':dict(expansion_limit=8,budget=2048,state_limit=32,time_seconds=8,semantic_budget=2048,semantic_seconds=8,proposal_timeout=8),
+    'balanced':dict(expansion_limit=32,budget=32768,state_limit=512,time_seconds=60,semantic_budget=8192,semantic_seconds=30,proposal_timeout=60),
+    'thorough':dict(expansion_limit=128,budget=131072,state_limit=4096,time_seconds=300,semantic_budget=32768,semantic_seconds=120,proposal_timeout=180),
 }
 
 def effort_options(args):
@@ -54,10 +54,17 @@ def fingerprint(state):
     return identity(dict(source=state['source'],representation=(state.get('representation')or{}).get('representation'),
         definitions=state.get('definition_choices')or{},physical=state.get('physical'),maintained=state.get('maintained'),protocol=protocol_identity(state.get('protocol')),route=state.get('route'),resources=state.get('resources'),properties=sorted(facts)))
 
-def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_seconds=3600,memory_bytes=512_000_000):
+def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_seconds=3600,memory_bytes=512_000_000,expansion_limit=32):
     """The callback boundary admits complete proof chains, never hash equality.
     Invalid proofs do not mark their prospective target state as visited.
     """
+    # Bound each parent, not just the total state count. Otherwise one prolific
+    # family can fill the entire frontier before a single child is expanded.
+    # This only allocates search effort: every edge still replays its full chain.
+    # Zero requests exhaustive per-parent enumeration (the previous policy).
+    if type(expansion_limit) is not int or not 0<=expansion_limit<=1_000_000:
+        raise ValueError('invalid per-state expansion budget')
+    truncated=[];expanded=0
     started=time.monotonic();first=check(initial)
     states={fingerprint(first):(initial,first)};agenda=[];serial=0;attempts=0;edges=[];rejections=[];retained=len(canonical(initial))+len(canonical(first))
     heapq.heappush(agenda,(priority(first),serial,fingerprint(first)))
@@ -65,7 +72,7 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
     while agenda:
         if time.monotonic()-started>=time_seconds:stopped='time';break
         _,_,parent=heapq.heappop(agenda);package,state=states[parent]
-        expansion=expand(state,states)
+        expansion=expand(state,states);expanded+=1;parent_attempts=0
         try:
             for proposal in expansion:
                 if time.monotonic()-started>=time_seconds:stopped='time';break
@@ -74,8 +81,11 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
                 if proposal.get('status')!='proposal':continue
                 steps=proposal.get('steps',[proposal.get('step')])
                 if not steps or any(step is None for step in steps):continue
+                if expansion_limit and parent_attempts>=expansion_limit:
+                    truncated.append(dict(state=parent,attempts=parent_attempts,reason='per-state expansion budget'))
+                    break
                 candidate=copy.deepcopy(package);candidate['steps'].extend(steps)
-                attempts+=1
+                attempts+=1;parent_attempts+=1
                 try:checked=check(candidate)
                 except (ValueError,OSError,subprocess.TimeoutExpired)as error:
                     limited=isinstance(error,(CheckerBudgetError,subprocess.TimeoutExpired))
@@ -93,7 +103,8 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
             if hasattr(expansion,'close'):expansion.close()
         if stopped:break
     return states,dict(attempts=attempts,admitted_states=len(states),edges=edges,rejected=rejections,
-        stop_reason=stopped or('checker-time'if unchecked_checks else'fixed-point'),unchecked_checks=unchecked_checks,remaining=len(agenda),retained_bytes=retained,
+        stop_reason=stopped or('checker-time'if unchecked_checks else'expansion-budget'if truncated else'fixed-point'),unchecked_checks=unchecked_checks,remaining=len(agenda),retained_bytes=retained,
+        expanded_states=expanded,expansion_limit=expansion_limit,truncated_expansions=truncated,
         elapsed_seconds=str(time.monotonic()-started),scope='Exact typed states and checked edges; bounded compilation, no runtime optimisation probes')
 
 class Planner:
@@ -262,6 +273,7 @@ def main():
     p.add_argument('--snapshot',type=Path);p.add_argument('--registry',type=Path);p.add_argument('--target',default='rust');p.add_argument('-o',type=Path,required=True)
     p.add_argument('--planning-effort',choices=sorted(EFFORTS),default='balanced')
     p.add_argument('--budget',type=int);p.add_argument('--state-limit',type=int)
+    p.add_argument('--expansion-limit',type=int,help='proof attempts per state before exploring children; 0 enumerates each parent exhaustively')
     p.add_argument('--time-seconds',type=int);p.add_argument('--memory-bytes',type=int,default=512_000_000)
     p.add_argument('--check-timeout',type=int,default=120);p.add_argument('--proposal-timeout',type=int)
     p.add_argument('--recipe-workers',type=int,default=2,help='bounded simultaneous recipe processes')
@@ -283,7 +295,7 @@ def main():
     args=effort_options(p.parse_args())
     if not 1<=args.recipe_workers<=8:p.error('recipe workers must be between 1 and 8')
     if not 0<=args.semantic_seconds<=86400:p.error('semantic seconds must be between 0 and 86400')
-    if any(getattr(args,n)<0 for n in ['budget','state_limit','time_seconds','memory_bytes','check_timeout','proposal_timeout','semantic_budget','candidate_limit']):p.error('planning budgets must be nonnegative')
+    if any(getattr(args,n)<0 for n in ['expansion_limit','budget','state_limit','time_seconds','memory_bytes','check_timeout','proposal_timeout','semantic_budget','candidate_limit']):p.error('planning budgets must be nonnegative')
     if args.state_limit<1 or args.memory_bytes<1 or args.check_timeout<1 or args.proposal_timeout<1:p.error('positive state/memory/process budgets required')
     if args.semantic_rounds is not None and args.semantic_rounds<0:p.error('semantic rounds must be nonnegative')
     if not 1<=args.measure_timeout<=600:p.error('measurement process budget must be between 1 and 600 seconds')
@@ -337,7 +349,7 @@ def main():
                 planner.close();return
             except (ValueError,KeyError,TypeError,OSError,subprocess.TimeoutExpired)as error:
                 planner.notes.append(dict(recipe='compiled-cache',status='declined',reason=str(error)[-2000:]))
-        states,receipt=explore(initial,planner.expand,planner.check,planner.priority,args.budget,args.state_limit,args.time_seconds,args.memory_bytes)
+        states,receipt=explore(initial,planner.expand,planner.check,planner.priority,args.budget,args.state_limit,args.time_seconds,args.memory_bytes,args.expansion_limit)
         if hashlib.sha256(compiler.read_bytes()).hexdigest()!=planner.compiler_hash or code_fingerprint()!=planner.code_hash:raise ValueError('compiler or planning knowledge changed during search')
         from ink_knowledge.implementation_candidates import publish_candidates
         packages=[package for package,_ in states.values()]

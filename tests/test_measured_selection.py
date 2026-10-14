@@ -21,3 +21,14 @@ class MeasuredSelection(unittest.TestCase):
         self.assertEqual(choose(report([10]*9),{'call:run':1},'base',policy())[0],'base')
         self.assertEqual(choose(report([10]*11),{'call:run':1,'call:other':1},'base',policy())[0],'base')
 
+
+class CandidateIdentity(unittest.TestCase):
+    def test_maintained_and_protocol_implementations_are_not_discarded_as_baseline(self):
+        from ink_planner.measured_selection import shortlist
+        states=[dict(source='same'),dict(source='same',maintained={'package_sha256':'sum'}),
+                dict(source='same',maintained={'package_sha256':'parity'}),
+                dict(source='same',protocol={'direct_reads':['query']}),
+                dict(source='same',properties=[{'facts':['proof-only']}])]
+        self.assertEqual(shortlist(states,lambda _:0,8),[0,1,2,3])
+        states.append(dict(source='same',maintained={'package_sha256':'sum'}))
+        self.assertEqual(shortlist(states,lambda _:0,8),[0,1,2,3])

@@ -160,6 +160,7 @@ def run_program(program, manifest_dir, args, out):
         command = [sys.executable, '-m', 'ink_planner.compiled_planning', '--compiler', str(args.compiler),
                    '--source', str(manifest_dir / program['source']), '--knowledge-root', str(scratch),
                    '--target', args.target, '--planning-effort', args.planning_effort, '-o', str(plan)]
+        if getattr(args,'expansion_limit',None) is not None:command += ['--expansion-limit',str(args.expansion_limit)]
         environment = dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path(__file__).parents[1]), str(scratch)]))
         started = time.monotonic()
         result = subprocess.run(command, capture_output=True, text=True, env=environment, timeout=args.timeout)
@@ -312,7 +313,7 @@ def execution_context(args):
             planner_sources.update(str(path.relative_to(planner_root)).encode())
             planner_sources.update(b'\0')
             planner_sources.update(hashlib.sha256(path.read_bytes()).digest())
-    return dict(target=args.target, planning_effort=args.planning_effort,
+    return dict(target=args.target, planning_effort=args.planning_effort, expansion_limit=getattr(args,'expansion_limit',None),
                 timeout=args.timeout, planner_source_sha256=planner_sources.hexdigest(),
                 compiler_sha256=hashlib.sha256(args.compiler.read_bytes()).hexdigest(),
                 snapshot=store.snapshot_id, registry_sha256=registry,
@@ -348,6 +349,7 @@ def main():
     p.add_argument('--knowledge-root', type=Path, required=True)
     p.add_argument('--target', default='javascript')
     p.add_argument('--planning-effort', default='balanced', choices=['quick', 'balanced', 'thorough'])
+    p.add_argument('--expansion-limit',type=int,help='override per-state proof attempt budget; 0 reproduces exhaustive parent enumeration')
     p.add_argument('--programs', help='comma-separated subset of program names')
     p.add_argument('--timeout', type=int, default=1800)
     p.add_argument('--scratch', type=Path, help='directory for private knowledge copies (same filesystem as the root)')

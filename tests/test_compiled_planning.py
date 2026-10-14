@@ -108,3 +108,75 @@ class ProducerDeadline(unittest.TestCase):
         expand=lambda *_:iter([dict(status='search-limit',reason='time')])
         _,receipt=explore(dict(steps=[]),expand,check,lambda _:0,time_seconds=10)
         self.assertEqual(receipt['stop_reason'],'time')
+
+class CompositionBudget(unittest.TestCase):
+    def graph(self):
+        def check(packet):
+            state='source'
+            for step in packet['steps']:
+                edge=step['package']
+                if edge['from']!=state:raise ValueError('stale composition source')
+                if edge.get('false'):raise ValueError('invalid preservation proof')
+                state=edge['to']
+            return dict(source=state,properties=[])
+        def edge(a,b,**extra):
+            return dict(status='proposal',recipe='database-family',step=dict(kind='rewrite',package=dict({'from':a,'to':b},**extra)))
+        def expand(state,_):
+            name=state['source']
+            if name=='source':
+                yield edge(name,'factorised')
+                for i in range(100):yield edge(name,'layout-'+str(i))
+            elif name=='factorised':
+                yield edge(name,'maintained')
+            elif name=='maintained':
+                yield edge(name,'fused')
+        return check,expand
+
+    def test_composes_before_one_family_exhausts_global_state_budget(self):
+        check,expand=self.graph()
+        bounded,receipt=explore(dict(steps=[]),expand,check,lambda _:0,state_limit=8,expansion_limit=2)
+        self.assertIn('fused',{s['source']for _,s in bounded.values()})
+        self.assertEqual(receipt['stop_reason'],'expansion-budget')
+        self.assertEqual(len(receipt['truncated_expansions']),1)
+        self.assertGreater(receipt['expanded_states'],1)
+        exhaustive,old=explore(dict(steps=[]),expand,check,lambda _:0,state_limit=8,expansion_limit=0)
+        self.assertNotIn('fused',{s['source']for _,s in exhaustive.values()})
+        self.assertEqual(old['stop_reason'],'states')
+
+    def test_rejected_edges_spend_parent_budget_without_becoming_authority(self):
+        check,_=self.graph()
+        def expand(state,_):
+            if state['source']=='source':
+                for i in range(20):
+                    yield dict(status='proposal',step=dict(kind='rewrite',package={'from':'source','to':str(i),'false':True}))
+        states,receipt=explore(dict(steps=[]),expand,check,lambda _:0,expansion_limit=3)
+        self.assertEqual(len(states),1)
+        self.assertEqual(receipt['attempts'],3)
+        self.assertEqual(len(receipt['rejected']),3)
+        self.assertEqual(receipt['stop_reason'],'expansion-budget')
+
+    def test_truncated_generators_close_before_children_and_complete_chains_replay(self):
+        active=[];closed=[];checked=[]
+        check,original=self.graph()
+        def expand(state,states):
+            self.assertFalse(active)
+            active.append(state['source'])
+            try:yield from original(state,states)
+            finally:closed.append(active.pop())
+        def replay(packet):
+            checked.append(len(packet['steps']))
+            return check(packet)
+        states,receipt=explore(dict(steps=[]),expand,replay,lambda _:0,expansion_limit=1)
+        self.assertEqual(max(checked),3)
+        self.assertEqual(len(closed),receipt['expanded_states'])
+        self.assertFalse(active)
+        for packet,state in states.values():self.assertEqual(check(packet),state)
+
+    def test_exact_limit_is_complete_and_invalid_limits_are_rejected(self):
+        check=lambda p:dict(source=str(len(p['steps'])))
+        def expand(state,_):
+            if state['source']=='0':yield dict(status='proposal',step=dict(kind='rewrite',package={}))
+        _,receipt=explore(dict(steps=[]),expand,check,lambda _:0,expansion_limit=1)
+        self.assertEqual(receipt['stop_reason'],'fixed-point')
+        for bad in [-1,True,1.5,1_000_001]:
+            with self.assertRaises(ValueError):explore(dict(steps=[]),expand,check,lambda _:0,expansion_limit=bad)

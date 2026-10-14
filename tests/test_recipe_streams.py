@@ -55,6 +55,34 @@ class RecipeStreams(unittest.TestCase):
                 if not status or status.startswith('Z')or time.monotonic()>=deadline:break
                 time.sleep(.01)
             self.assertTrue(not status or status.startswith('Z'),status)
+    def test_database_priority_finishes_before_later_jobs_launch(self):
+        with tempfile.TemporaryDirectory()as tmp:
+            jobs=self.jobs(Path(tmp),[
+                "import sys;open(sys.argv[1],'w').write('later\\n')",
+                "import sys,time;time.sleep(.15);open(sys.argv[1],'w').write('earlier\\n')"])
+            jobs[1]['recipe']={'stage':'maintained','priority':-10}
+            stream=run(jobs,2,time.monotonic()+5,3)
+            try:
+                job,event=next(stream)
+                self.assertEqual((job['key'],event['raw']),('1',b'earlier'))
+                self.assertFalse(jobs[0]['stdout'].exists())
+                events=list(stream)
+                self.assertTrue(any(j['key']=='0'and e.get('raw')==b'later'for j,e in events))
+            finally:stream.close()
+    def test_priority_timeout_does_not_starve_later_jobs(self):
+        with tempfile.TemporaryDirectory()as tmp:
+            jobs=self.jobs(Path(tmp),[
+                "import time;time.sleep(30)",
+                "import sys;open(sys.argv[1],'w').write('later\\n')"])
+            jobs[0]['recipe']={'priority':-10}
+            events=list(run(jobs,2,time.monotonic()+3,.15))
+            self.assertEqual(events[0][1]['reason'],'proposal process time budget')
+            self.assertIn(('1',b'later'),[(j['key'],e.get('raw'))for j,e in events])
+    def test_priority_groups_preserve_stage_round_robin(self):
+        from ink_planner.recipe_streams import interleave_stages
+        jobs=[dict(key=str(i),recipe=dict(stage=stage,priority=level))for i,(stage,level)in enumerate([
+            ('a',0),('a',-1),('a',-1),('b',-1),('b',0),('a',0)])]
+        self.assertEqual([j['key']for j in interleave_stages(jobs)],['1','3','2','0','4','5'])
     def test_early_consumer_close_kills_worker(self):
         with tempfile.TemporaryDirectory()as tmp:
             jobs=self.jobs(Path(tmp),["import sys,time;f=open(sys.argv[1],'w');f.write('header\\n');f.flush();time.sleep(30)"])

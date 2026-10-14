@@ -11,7 +11,7 @@ def shortlist(states,priority,limit):
     seen=set();groups={};baseline=states[0]['source']
     for i,state in enumerate(states):
         if not state.get('capability',{}).get('emittable',True):continue
-        operational={k:state.get(k)for k in ['source','representation','definition_choices','physical','route','resources']}
+        operational={k:state.get(k)for k in ['source','representation','definition_choices','physical','maintained','protocol','route','resources']}
         key=identity(operational)
         if key in seen:continue
         seen.add(key);groups.setdefault(state['source'],[]).append(i)
