@@ -309,7 +309,7 @@ def guarded_again(body, path, condition):
     return found or (isinstance(n,dict) and n.get('Op',[None])[0]=='call:choose' and n['Op'][1][0]==condition)
 
 
-def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operation_costs=None, core_program=None, diverse=True, strategy="memo", memory_bytes=256_000_000, time_seconds=600, alternatives=None, policy=None, neighbourhood=None, refresh=None, near_misses=None, reason=None):
+def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operation_costs=None, core_program=None, diverse=True, strategy="memo", memory_bytes=256_000_000, time_seconds=600, alternatives=None, policy=None, neighbourhood=None, refresh=None, near_misses=None, reason=None, context_bodies=None):
     """`near_misses` optionally records matched-but-unadmitted proposals and
     `reason` returns the checker's last rejection message. Both are diagnostics
     only: they never change ordering, admission or the selected result."""
@@ -356,9 +356,11 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
             body_costs.clear();body_profiles.clear();analysis_bytes=0
         cache[ident]=(body,result,size);analysis_bytes+=size
         return result
+    def full_bodies(bodies):
+        return dict(context_bodies or {}, **bodies)
     def score_bodies(bodies):
         if component_model is not None:
-            return component_model.estimate_module(bodies, core_program)['score_ns']
+            return component_model.estimate_module(full_bodies(bodies), core_program)['score_ns']
         return sum(cached(body_costs,t,lambda body:_cost(body,prices))for t in bodies.values())
     from ink_knowledge.cost_models import structural_components
     dimensions = ('allocation_events', 'traversal_elements', 'copy_bytes')
@@ -381,7 +383,7 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         fingerprint = key(bodies)
         if fingerprint not in profile_cache:
             if component_model is not None:
-                profile_cache[fingerprint] = component_model.estimate_module(bodies, core_program)['components']
+                profile_cache[fingerprint] = component_model.estimate_module(full_bodies(bodies), core_program)['components']
             else:
                 result = dict.fromkeys(dimensions, 0)
                 for body in bodies.values():
@@ -525,8 +527,8 @@ def search(subject, catalogue, check, budget=4096, width=16, rounds=None, operat
         initial=profile(start), selected=profile(best[1]), scope='Untrusted source-work hypotheses; no timing or proof authority')
     if component_model is not None:
         receipt['estimate'] = 'schema2 untrusted source component hypothesis in ns; not measured runtime or physical GPU cost'
-        receipt['initial_components'] = component_model.estimate_module(start, core_program)
-        receipt['selected_components'] = component_model.estimate_module(best[1], core_program)
+        receipt['initial_components'] = component_model.estimate_module(full_bodies(start), core_program)
+        receipt['selected_components'] = component_model.estimate_module(full_bodies(best[1]), core_program)
     return best[2], receipt
 
 
@@ -946,16 +948,23 @@ def main():
                 applications, receipt = modular_plan(subject, catalogue, check, search, core_program, args.modular_cache, context,
                     budget=budget, time_seconds=time_seconds, operation_costs=operation_costs, rounds=args.rounds,
                     core_program=core_program, width=args.width, memory_bytes=args.memory_bytes, strategy=args.strategy,
-                    near_misses=near_misses, reason=lambda:checker.last_error)
+                    near_misses=near_misses, reason=lambda:checker.last_error, refresh=refresh, alternatives=alternatives)
                 from ink_planner.semantic_search import cost as structural
-                receipt.update(initial_cost=sum(structural(b, operation_costs) for b in subject['functions'].values()),
-                    search_policy=dict(strategy='modular'),check_rows=[],
-                    memo=dict(rounds=0,timed_out=False,memory_exhausted=False))
+                def module_score(bodies):
+                    if isinstance(operation_costs, TargetCostModel):
+                        return operation_costs.estimate_module(bodies, core_program)['score_ns']
+                    return sum(structural(b, operation_costs) for b in bodies.values())
+                receipt.update(initial_cost=module_score(subject['functions']),
+                    search_policy=dict(strategy='modular'),check_rows=[])
                 bodies=dict(subject['functions'])
                 for step in applications:
                     law=catalogue['objects'][step['law']]
                     bodies[step['function']]=replace(bodies[step['function']],step['path'],substitute(law['to'],step['arguments']))
-                receipt['selected_cost']=sum(structural(b, operation_costs) for b in bodies.values())
+                receipt['selected_cost']=module_score(bodies)
+                if isinstance(operation_costs, TargetCostModel):
+                    receipt['estimate']='schema2 untrusted source component hypothesis in ns; not measured runtime or physical GPU cost'
+                    receipt['initial_components']=operation_costs.estimate_module(subject['functions'], core_program)
+                    receipt['selected_components']=operation_costs.estimate_module(bodies, core_program)
             else:
                 applications, receipt = search_restarts(search, subject, catalogue, check, budget=budget,
                     strategy=args.search_strategy, seed=args.search_seed, restarts=args.search_restarts, scorer=scorer,
