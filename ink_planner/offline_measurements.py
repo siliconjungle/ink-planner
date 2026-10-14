@@ -60,6 +60,7 @@ def target_context(planner,state=False,encoded=False):
         version=subprocess.check_output([executable,'--version'],text=True).strip();runner=RUNNER
         bridge='trusted-values-v3;mean-complete-call;full-bit-aware-output-consumption'
         if encoded:bridge='schema-framed-owned-result-v1;whole-call-and-complete-byte-consumption'
+        bridge+=';whole-host-peak-rss'
         if state:
             from .state_measurements import RUNNER as runner
             bridge='typed-bound-full-observation-v1;independent-state-history;portable-lifecycle;whole-host-peak-rss'
@@ -152,8 +153,11 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     accepted=set()
     for row in report['rows']:
         if row['measurement'] not in {a['measurement']for a in artifacts} or row['phase'] not in spec['phases']:raise ValueError('measurement response binding mismatch')
-        Store.validate_observation(dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=row['measurement'],target=target,workload=phase_workload(workload,row['phase']),metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=None)))
-        obj=dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=row['measurement'],target=target,workload=phase_workload(workload,row['phase']),metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=None))
+        peak=row.get('peak_rss_bytes')
+        if planner.options.target=='javascript'and(type(peak)is not int or peak<=0):raise ValueError('missing or invalid whole-host peak RSS')
+        Store.validate_observation(dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=row['measurement'],target=target,workload=phase_workload(workload,row['phase']),metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=peak)))
+        obj=dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=row['measurement'],target=target,workload=phase_workload(workload,row['phase']),metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=peak))
         observations.append(store.observe(obj));accepted.add(row['measurement'])
     if measurements[0] not in accepted:raise ValueError('baseline failed measurement validation')
-    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; average whole call and full result consumption; separate setup; no exact peak memory evidence; no runtime probes')
+    memory_scope='conservative whole-process peak RSS including all candidates and adapter; not per-candidate heap'if planner.options.target=='javascript'else'no peak memory evidence'
+    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; average whole call and full result consumption; separate setup; '+memory_scope+'; no runtime probes')

@@ -41,7 +41,7 @@ class OfflineMeasurements(unittest.TestCase):
             Emitter.compiler=compiler
             workload=root/'workload.json';workload.write_text(json.dumps(dict(schema=1,phases={'call:run':[dict(function='run',args=[])]},profile={'call:run':1},workload=dict(shape={},distribution='controls',concurrency=1,residency='captured'))))
             baseline='a'*64;candidate='b'*64
-            _,_,_,receipt=acquire(Emitter(),store,[{'input_core_sha256':'c'*64}]*2,[{}]*2,[baseline,candidate],workload)
+            target,shape,weights,receipt=acquire(Emitter(),store,[{'input_core_sha256':'c'*64}]*2,[{}]*2,[baseline,candidate],workload)
             self.assertEqual(receipt['acquisition']['processes'],3)
             self.assertEqual({row['measurement']for row in receipt['acquisition']['rows']},{baseline})
             self.assertEqual({row['measurement']for row in receipt['rejected']},{candidate})
@@ -49,6 +49,15 @@ class OfflineMeasurements(unittest.TestCase):
             # Old successful measurements must not override a fresh rejection.
             # Synthetic costs exercise this policy, not machine performance.
             from ink_planner.representation_selection import rank
+            peaks=[row['peak_rss_bytes']for row in receipt['acquisition']['rows']]
+            self.assertTrue(all(type(p)is int and p>0 for p in peaks))
+            self.assertIn('whole-host-peak-rss',target['bridge'])
+            # The real acquisition reaches the memory gate: an insufficient
+            # budget fails closed and a sufficient observed budget is admitted.
+            with self.assertRaisesRegex(ValueError,'memory constraint'):
+                rank(store,'c'*64,[baseline],target,shape,weights,baseline,memory_limit=min(peaks)-1)
+            admitted,_=rank(store,'c'*64,[baseline],target,shape,weights,baseline,memory_limit=max(peaks))
+            self.assertEqual(admitted,baseline)
             history=SimpleNamespace(iter_observations=lambda program,plans,target,workload:[dict(plan=m,metrics=dict(complete_call_ns=['1'if m==candidate else '100']*3,peak_bytes=None))for m in plans])
             old,_=rank(history,'c'*64,[baseline,candidate],{}, {'distribution':'history'},{'call:run':1},baseline,sample_guard=True)
             fresh,_=rank(history,'c'*64,validated([baseline,candidate],receipt),{}, {'distribution':'history'},{'call:run':1},baseline,sample_guard=True)

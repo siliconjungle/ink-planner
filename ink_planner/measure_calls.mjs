@@ -102,4 +102,9 @@ for(const l of lanes){try{
  valid.add(l.measurement);
 }catch(e){rejected.push({measurement:l.measurement,reason:String(e)});}}
 if(!valid.has(artifacts[0].measurement))throw Error('baseline failed post-measurement validation');
-console.log(JSON.stringify({schema:1,node:process.version,input_fingerprints:[...input_fingerprints].sort(),rows:rows.filter(r=>valid.has(r.measurement)),rejected,module_load:lanes.map(l=>({measurement:l.measurement,module_load_ms:l.module_load_ms,validation_ms:l.validation_ms})),sink}));
+// A conservative budget observation, not attribution to one candidate's heap.
+// This process includes all artifacts, captured inputs, validation and adapter.
+const peak_rss_bytes=process.resourceUsage().maxRSS*1024;
+if(!Number.isSafeInteger(peak_rss_bytes)||peak_rss_bytes<=0)throw Error('invalid host peak RSS observation');
+for(const row of rows)row.peak_rss_bytes=peak_rss_bytes;
+console.log(JSON.stringify({schema:1,node:process.version,input_fingerprints:[...input_fingerprints].sort(),rows:rows.filter(r=>valid.has(r.measurement)),rejected,module_load:lanes.map(l=>({measurement:l.measurement,module_load_ms:l.module_load_ms,validation_ms:l.validation_ms})),peak_rss_bytes,memory_scope:'Whole-process peak RSS including all candidates and adapter; conservative bound, not per-candidate heap attribution',sink}));

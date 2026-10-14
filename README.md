@@ -242,10 +242,12 @@ candidate. `--measure-processes`, `--measure-timeout` and
 `--minimum-measured-gain-ppm` make the acquisition budget and margin explicit.
 Module import and validation costs are reported separately from warm calls.
 This explicit multi-process and typed-holdout path uses pure JavaScript calls.
-The automatic path below also supports Rust JSON calls. Neither path measures
-state or migration lifecycles or exact peak memory. General lifecycle ranking
-can still consume externally supplied observations. No runtime probes or learned
-search are introduced.
+The automatic path below also supports Rust JSON calls. JavaScript reports
+whole-process peak RSS, including all candidate artifacts, captured inputs,
+validation and adapter overhead. This supports a conservative observed memory
+budget; it is not per-candidate heap attribution. Rust pure-call memory remains
+unmeasured. State and migration lifecycles require their dedicated adapters or
+externally supplied observations. No runtime probes or learned search are introduced.
 
 ## Automatic implementation choice
 
@@ -260,7 +262,7 @@ Source-diverse checked candidates undergo interleaved complete-output measuremen
 and independent reference/input checks. Setup enters the lifecycle estimate; a
 comparison-adjusted paired uncertainty guard requires at least 5% improvement.
 Synthetic calls do not describe actual user usage, and some input regimes can
-regress. Unsupported types, stateful lifecycles, targets, memory constraints or
+regress. Unsupported types, stateful lifecycles, targets, unmeasured memory constraints or
 migration retain the baseline unless comparable supplied evidence supports a
 choice. `--measurement-mode off` disables synthetic acquisition;
 `--measure-workload` supplies explicit development calls. No selection packet is
@@ -312,8 +314,8 @@ bounded dense prefixes. Every proposal is replayed before measurement.
 Each history resets to the same portable seed outside its timed window. The
 independent source evaluator supplies all results, errors, versions, events and
 exact snapshots. These must match before and after timing, and captured inputs
-must remain owned. Each candidate is measured in separate fresh processes; peak
-RSS includes the host and adapter. Setup, module load, checkpoint and restore costs
+must remain owned. Fresh processes each contain isolated candidate states; peak
+RSS includes all candidates, the host and adapter. Setup, module load, checkpoint and restore costs
 have explicit weights. Missing comparable evidence retains the baseline.
 
 Holdout histories must differ from training transition histories, although setup
