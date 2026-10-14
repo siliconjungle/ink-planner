@@ -384,3 +384,20 @@ or arbitrary future plugin dependency, and it does not remove load, scheduling,
 random-seed or timing-budget variability. Extend the component list when adding
 execution dependencies. A missing package is recorded as missing rather than
 silently equated with an installed package; proof admission remains independent.
+
+Corpus startup captures every manifest program using `emit-core --capture-sources`.
+The compiler exports the exact source bytes it consumed (including transitive,
+absolute, symlinked and embedded standard imports) together with the identity of
+that same load's checked core. The captured root must match the manifest hash.
+Inputs are saved under `inputs/` and their identities bind resume/report-only
+operations. A source or dependency edit therefore requires a new evaluation;
+missing or changed saved input evidence is rejected. Acquisition failures stop
+before replacing context/records. Older compilers without source capture cannot
+run this harness.
+
+Planning uses a private copy of the captured core with normal `--core` checking;
+it never reopens the original source graph. Editing original files after capture
+cannot change that evaluation. Capture describes the bytes actually read, not an
+atomic snapshot of the entire filesystem. Each record separates source-capture
+and planning seconds; their sum is the reported total. Source capture is performed
+before corpus planning, so timing remains sensitive to cache state and contention.

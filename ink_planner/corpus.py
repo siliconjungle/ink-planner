@@ -82,8 +82,8 @@ def clone_knowledge(source, destination):
                 original.backup(private)
 
 
-def load_manifest(path):
-    manifest = json.loads(Path(path).read_text())
+def load_manifest(path, content=None):
+    manifest = json.loads(Path(path).read_bytes() if content is None else content)
     if manifest.get('schema') != 1 or manifest.get('semantics') != MANIFEST:
         raise ValueError('corpus manifest schema')
     names = set()
@@ -155,20 +155,25 @@ def worker_environment(knowledge_root):
     return dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path(__file__).parents[1]), str(knowledge_root)]))
 
 
-def run_program(program, manifest_dir, args, out):
+def run_program(program, prepared, args, out):
     record = dict(name=program['name'], split=program['split'])
     with tempfile.TemporaryDirectory(prefix='ink-corpus-', dir=args.scratch) as temporary:
+        core = Path(temporary) / 'source.core.json'
+        core.write_bytes(prepared['core'])
         scratch = Path(temporary) / 'knowledge'
         private_copy(args.knowledge_root, scratch)
         plan = out / 'plans' / f"{program['name']}.json"
         plan.parent.mkdir(parents=True, exist_ok=True)
         command = [sys.executable, '-m', 'ink_planner.compiled_planning', '--compiler', str(args.compiler),
-                   '--source', str(manifest_dir / program['source']), '--knowledge-root', str(scratch),
+                   '--source', str(core), '--core', '--knowledge-root', str(scratch),
                    '--target', args.target, '--planning-effort', args.planning_effort, '-o', str(plan)]
         environment = worker_environment(scratch)
         started = time.monotonic()
         result = subprocess.run(command, capture_output=True, text=True, env=environment, timeout=args.timeout)
-        record['seconds'] = round(time.monotonic() - started, 3)
+        record['planning_seconds'] = round(time.monotonic() - started, 3)
+        record['source_capture_seconds'] = prepared['seconds']
+        record['seconds'] = round(record['planning_seconds'] + prepared['seconds'], 3)
+        record['core_sha256'] = prepared['core_sha256']
         record['status'] = result.returncode
         if result.returncode:
             record['error'] = result.stderr[-3000:]
@@ -297,7 +302,7 @@ def markdown(report, context):
     return '\n'.join(lines)
 
 
-def execution_context(args):
+def execution_context(args, inputs=None):
     """Bind resumable diagnostics to the exact compiler, publication and code."""
     from ink_knowledge import Store
     from ink_knowledge.recipes import load
@@ -323,7 +328,8 @@ def execution_context(args):
                 compiler_sha256=hashlib.sha256(args.compiler.read_bytes()).hexdigest(),
                 snapshot=store.snapshot_id, registry_sha256=registry,
                 producer_source_sha256=sources.hexdigest(),
-                manifest_sha256=hashlib.sha256(args.manifest.read_bytes()).hexdigest())
+                manifest_sha256=hashlib.sha256(args.manifest.read_bytes() if inputs is None else inputs.manifest_bytes).hexdigest(),
+                corpus_inputs=None if inputs is None else inputs.context())
 
 
 def write_checkpoint(path, value):
@@ -361,35 +367,38 @@ def main():
     p.add_argument('--report-only', action='store_true', help='re-aggregate existing records in the output directory')
     p.add_argument('-o', '--output', type=Path, required=True)
     args = p.parse_args()
-    manifest = load_manifest(args.manifest)
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
     args.compiler = args.compiler.resolve(); args.knowledge_root = args.knowledge_root.resolve()
     args.scratch = (args.scratch or out / 'scratch').resolve(); args.scratch.mkdir(parents=True, exist_ok=True)
     wanted = set(args.programs.split(',')) if args.programs else None
     records_path = out / 'records.json'
-    context = execution_context(args)
+    from .corpus_inputs import CapturedInputs
+    inputs = CapturedInputs(args)
+    manifest = inputs.manifest
+    context = execution_context(args, inputs)
     context_path = out / 'context.json'
     bind_context(context_path, context, args.resume or args.report_only)
+    inputs.save(out / 'inputs', verify=args.resume or args.report_only)
     records = json.loads(records_path.read_text()) if (args.resume or args.report_only) and records_path.exists() else []
     if not args.report_only:
         done = {r['name'] for r in records if r.get('status') == 0}
         for program in manifest['programs']:
             if args.resume and program['name'] in done:
                 continue
-            if execution_context(args) != context:
+            if execution_context(args, inputs) != context:
                 raise ValueError('corpus execution context changed during evaluation')
             if wanted is not None and program['name'] not in wanted:
                 continue
             records = [r for r in records if r['name'] != program['name']]
             print(f"planning {program['name']} ...", file=sys.stderr, flush=True)
             try:
-                record = run_program(program, args.manifest.resolve().parent, args, out)
+                record = run_program(program, inputs.programs[program['name']], args, out)
             except subprocess.TimeoutExpired:
                 record = dict(name=program['name'], split=program['split'], status='timeout')
             records.append(record)
             write_checkpoint(records_path, records)
             print(f"  {record.get('status')} in {record.get('seconds')}s", file=sys.stderr, flush=True)
-    if execution_context(args) != context:
+    if execution_context(args, inputs) != context:
         raise ValueError('corpus execution context changed during evaluation')
     report = dict(summarise(records, out), context=context)
     (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
