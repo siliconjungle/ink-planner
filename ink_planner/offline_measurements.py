@@ -22,7 +22,7 @@ def read_workload(path):
     if v.get('schema')==2:
         from .state_measurements import read_workload as read_state
         return read_state(path)
-    if set(v)!={'schema','phases','profile','workload'} or v['schema']!=1:raise ValueError('measurement workload schema')
+    if set(v)!={'schema','phases','profile','workload'} or v['schema']not in (1,3):raise ValueError('measurement workload schema')
     if not isinstance(v['phases'],dict) or not 1<=len(v['phases'])<=64 or set(v['phases'])!=set(v['profile']):raise ValueError('measurement phases/profile mismatch')
     calls=0
     for phase,rows in v['phases'].items():
@@ -31,7 +31,9 @@ def read_workload(path):
         if type(n) is not int or not 0<n<=1_000_000_000:raise ValueError('positive lifecycle weights required')
         if not isinstance(rows,list) or not rows:raise ValueError('measurement phase needs calls')
         for row in rows:
-            if set(row)!={'function','args'} or not isinstance(row['function'],str) or not isinstance(row['args'],list):raise ValueError('measurement call fields')
+            fields={'function','args'}|({'boundary'}if v['schema']==3 else set())
+            if set(row)!=fields or not isinstance(row['function'],str) or not isinstance(row['args'],list):raise ValueError('measurement call fields')
+            if v['schema']==3 and row['boundary']not in ('trusted','portable','compact'):raise ValueError('measurement call boundary')
             calls+=1
     if calls>512:raise ValueError('measurement call budget')
     # All supplied calls are selection/training data. Independent evaluation must
@@ -51,12 +53,13 @@ def independent_workloads(training,holdout):
                 for rows in spec['phases'].values()for row in rows}
     if calls(first)&calls(second):raise ValueError('holdout inputs overlap selection inputs')
 
-def target_context(planner,state=False):
+def target_context(planner,state=False,encoded=False):
     if planner.options.target=='javascript':
         executable=shutil.which('node')
         if not executable:raise ValueError('offline measurement requires Node.js')
         version=subprocess.check_output([executable,'--version'],text=True).strip();runner=RUNNER
         bridge='trusted-values-v3;mean-complete-call;full-bit-aware-output-consumption'
+        if encoded:bridge='schema-framed-owned-result-v1;whole-call-and-complete-byte-consumption'
         if state:
             from .state_measurements import RUNNER as runner
             bridge='typed-bound-full-observation-v1;independent-state-history;portable-lifecycle;whole-host-peak-rss'
@@ -90,7 +93,8 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     if spec['schema']==2:
         from .state_measurements import acquire as acquire_state
         return acquire_state(planner,store,packages,states,measurements,path,controls)
-    target=target_context(planner);controls=controls or {}
+    if spec['schema']==3 and planner.options.target!='javascript':raise ValueError('encoded lifecycle adapter requires JavaScript')
+    target=target_context(planner,encoded=spec['schema']==3);controls=controls or {}
     workload=dict(spec['workload'])
     if set(workload)!={'shape','distribution','concurrency','residency'}:raise ValueError('measurement workload provenance fields')
     workload['shape']=dict(inputs_sha256=digest,declared=workload['shape'])
@@ -121,7 +125,8 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     if not artifacts or artifacts[0]['measurement']!=measurements[0]:raise ValueError('baseline could not be measured')
     native_build=None
     if planner.options.target=='javascript':
-        request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=phases,measurement=controls),allow_nan=False))
+        from .value_transfer import transfer
+        request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=transfer(phases),measurement=controls,exact_transfer=True),allow_nan=False))
         processes=1 if controls else getattr(planner.options,'measure_processes',3)
         if type(processes) is not int or not 1<=processes<=8:raise ValueError('measurement process count')
         reports=[]
@@ -141,7 +146,7 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     # Do not persist observations under a fingerprint that changed during the
     # acquisition, even when final compiler replay would reject the build.
     from .compiled_planning import code_fingerprint
-    if hashlib.sha256(planner.compiler.read_bytes()).hexdigest()!=planner.compiler_hash or code_fingerprint()!=planner.code_hash or target_context(planner)!=target:
+    if hashlib.sha256(planner.compiler.read_bytes()).hexdigest()!=planner.compiler_hash or code_fingerprint()!=planner.code_hash or target_context(planner,encoded=spec['schema']==3)!=target:
         raise ValueError('execution machinery changed during offline acquisition')
     observations=[]
     accepted=set()

@@ -320,3 +320,34 @@ Holdout histories must differ from training transition histories, although setup
 and parameterless reads can recur. Holdout accepts or rejects the frozen winner.
 There are no application-time profitability probes. Current limits are 4,096 setup
 calls, 512 history calls, 64 phases, 1–8 processes and a 16 MB input workload.
+
+### Encoded call usage profiles
+
+Offline workload schema 3 adds a boundary field to each function/args call:
+trusted, portable or compact. Encoded inputs are prepared outside the timed call;
+timing includes validation, execution, complete reply encoding and consumption
+of every reply byte. Independent source execution supplies expected values.
+The adapter checks exact replies and unchanged input bytes before and after
+measurement, and rejects unsupported transfer data or targets.
+
+The offline JavaScript adapter uses tagged measurement packets to preserve every
+integer bit and negative zero without colliding with application record keys.
+Checked portable/compact probes include inhabited recursive records, options,
+results, fixed numeric vectors, exact words/Int, enums and identifiers. Recursion,
+value counts and the first nested sequence expansion are bounded. Unsupported
+trusted-call types remain excluded from that lane. These are cost inputs, not
+proof assumptions or observed customer usage.
+
+JavaScript automatic probes obtain their boundary mix from knowledge's
+automatic-selection.json. This is a bounded general usage model, not observed
+customer behaviour. Discovered observed profiles retain precedence. The
+database's boundary-readers recipe supplies implementation choices; no recipe
+dispatch or JSON recognition is added to the planner. Holdouts must contain new
+semantic inputs; switching the same value to another transport is insufficient.
+
+`python -m ink_planner.lifecycle_analysis replay.json -o analysis.json` performs
+bounded offline hindsight analysis of comparable state-history windows. It
+compares fixed choices and migration-charged schedules, optionally enforcing
+measured memory/pause budgets. Counterfactual windows require the same logical
+prefix and at least three measurements per variant. Hindsight, choice gaps and
+execution residuals are diagnostics, never a runtime policy or proof premise.

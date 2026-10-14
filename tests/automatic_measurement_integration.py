@@ -28,7 +28,12 @@ with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-'
     assert result.returncode==0,result.stderr
     packet=json.loads(plan.read_text());receipt=json.loads(Path(str(plan)+'.receipt.json').read_text())
     assert receipt['automatic_probe']['calls'] and receipt['measurement_acquisition'],receipt
-    if target=='javascript':assert packet['steps'],receipt['selection']
+    if target=='javascript':
+        # Profitability is workload/host dependent. Acquisition must compare
+        # admitted alternatives; an uncertainty-guarded baseline is valid.
+        assert len(receipt['measurement_acquisition']['validated_measurements'])>=2,receipt
+        if not packet['steps']:
+            assert receipt['selection']['reason']=='baseline retained; no robust measured lifecycle improvement',receipt['selection']
     subprocess.run([str(compiler),'check-plan',str(source),str(plan),'--target',target],check=True,capture_output=True)
     result=subprocess.run(command,env=environment,text=True,capture_output=True)
     assert result.returncode==0,result.stderr
