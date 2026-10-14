@@ -96,6 +96,6 @@ with tempfile.TemporaryDirectory(prefix='ink-db-implementation-integration-') as
         measured.add(r['measurement'])
         for package in [identity_selection(program), request]:
             args = emission_args(package['semantics'],source,output,lane,root/'lane-output')
-            assert args[0] in ('emit-rust','emit-c-project','build','emit-representation')
+            assert args[0] in ('emit-rust','build','emit-representation')
     assert len(measured) == len(TARGETS)
 print('database candidates: proofs rechecked; no privileged baseline; lifecycle, frequency, migration and all-lane evidence isolation; exact pinned replay and corruption rejection')

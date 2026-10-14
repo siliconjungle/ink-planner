@@ -11,7 +11,7 @@ from ink_knowledge.implementation_candidates import SEMANTICS,proof_views
 from .route_selection import read
 from .representation_selection import rank, phase_workload
 
-TARGETS = ('rust', 'c', 'javascript', 'rust-wasm', 'c-wasm', 'wgpu', 'webgpu')
+TARGETS = ('rust', 'javascript', 'rust-wasm', 'wgpu', 'webgpu')
 
 def measurement_id(candidate, compiler_sha256, target):
     hash_id(candidate); hash_id(compiler_sha256)
@@ -76,7 +76,6 @@ def emission_args(protocol, source, package, target, output):
         return ['emit-representation', source, package, '--target', target, '-o', output]
     if protocol != 'ink-evidence-v1': raise ValueError('unsupported proof package protocol')
     if target == 'rust': args = ['emit-rust', source]
-    elif target in ('c', 'c-wasm'): args = ['emit-c-project', source]
     elif target == 'rust-wasm': args = ['build', source, '--target', 'rust']
     else: args = ['build', source, '--target', 'gpu' if target == 'wgpu' else target]
     return [*args, '--selection', package, '-o', output]

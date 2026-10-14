@@ -426,7 +426,7 @@ def produce(args, compiler, out, core, program, roots, rules, generated, store, 
     (out / 'replacement.json').write_text(json.dumps(envelope, indent=2) + '\n')
     # Candidate generation has no authority: full input/definition/proof checks
     # happen in the unchanged compiler, including type-correct instantiations.
-    checked = subprocess.run([compiler, 'emit-c', out / 'core.json', '--core', '--replacement', out / 'replacement.json',
+    checked = subprocess.run([compiler, 'emit-rust', out / 'core.json', '--core', '--replacement', out / 'replacement.json',
         '-o', out / 'checked.c'], capture_output=True, text=True)
     if checked.returncode:
         raise SystemExit('Ink rejected the discovered replacement: ' + checked.stderr.strip())
