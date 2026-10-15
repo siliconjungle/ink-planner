@@ -28,7 +28,7 @@ class WorkModelCLI(unittest.TestCase):
             store = Mock(snapshot_id='snapshot')
             planner = Mock(compiler_hash=hashlib.sha256(compiler.read_bytes()).hexdigest(),
                            code_hash='code', registry_digest='registry', snapshot='snapshot',
-                           reused_steps=0, recipe_cache_hits=0, notes=[])
+                           reused_steps=0, recipe_cache_hits=0, recipe_dispatches={}, notes=[])
             def explore(initial, *args):
                 alternative = dict(initial, steps=[dict(kind='rewrite', package={})])
                 return {'base': (initial, dict(source='base')),

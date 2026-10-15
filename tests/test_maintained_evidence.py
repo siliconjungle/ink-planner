@@ -30,7 +30,7 @@ class MaintainedEvidence(unittest.TestCase):
                 maintained=dict(baseline,steps=[dict(kind='maintained',package=dict(views=[{}]))])
                 states=OrderedDict((str(i),(package,dict(source=ident,core={'program':{}},capability={'emittable':True})))for i,package in enumerate([baseline,maintained]))
                 planner=SimpleNamespace(compiler_hash=hashlib.sha256(compiler.read_bytes()).hexdigest(),code_hash='code',registry_digest='registry',snapshot=store.snapshot_id,
-                    notes=[],reused_steps=0,recipe_cache_hits=0,priority=lambda _:0,expand=lambda *_:iter(()),check=lambda _: {},invoke=lambda *_:None,close=lambda:None)
+                    notes=[],reused_steps=0,recipe_cache_hits=0,recipe_dispatches={},priority=lambda _:0,expand=lambda *_:iter(()),check=lambda _: {},invoke=lambda *_:None,close=lambda:None)
                 args=['ink-plan','--compiler',str(compiler),'--source',str(source),'--core','--knowledge-root',str(store.root),
                       '--target','javascript','--measurement-mode','off','--cache','off','-o',str(output),*constraints]
                 with patch.object(sys,'argv',args), patch('ink_planner.compiled_planning.Planner',return_value=planner), \
