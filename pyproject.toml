@@ -27,5 +27,6 @@ ink-learn-llvm = "ink_planner.llvm_learning:main"
 ink-learn-llvm-corpus = "ink_planner.llvm_corpus:main"
 ink-plan-parallel = "ink_planner.parallel_search:main"
 ink-plan-adaptive = "ink_planner.adaptive_search:main"
+ink-select-objective = "ink_planner.objective:main"
 
 ink-compile-plan = "ink_planner.compiled_planning:main"

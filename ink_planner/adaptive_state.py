@@ -72,7 +72,7 @@ def prepare(compiler,source,variants,target_key,output):
             ids[ident]=digest(artifact);artifacts.append(dict(id=ident,file=artifact.name,plan=plan.name))
         distribution=Path(__file__).resolve().parents[2]
         runtime=distribution/'runtime';abi=distribution/'abi'
-        for name in ('adaptive-state.mjs','adaptive-profile.mjs','usage-window.mjs','adaptive-collections.mjs'):shutil.copyfile(runtime/'hosts'/name,root/name)
+        for name in ('adaptive-state.mjs','adaptive-profile.mjs','usage-window.mjs','adaptive-collections.mjs','objective.mjs'):shutil.copyfile(runtime/'hosts'/name,root/name)
         shutil.copyfile(abi/'src/selection.mjs',root/'ink-selection.mjs');shutil.copyfile(abi/'selection.wasm',root/'ink-selection.wasm')
         bundle=dict(schema=1,kind='ink-adaptive-state-v1',binding=dict(source=source_id,compiler=digest(compiler),target=target_key,boundary='owned-serial-state-v1',variants=ids),artifacts=artifacts,baseline=spec[0]['id'])
         write(root/'bundle.json',bundle);shutil.copytree(root,output)
