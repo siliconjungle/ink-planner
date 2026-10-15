@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "keep": [
+    {
+      "path": "README.md",
+      "reason": "Required planner source, regression fixture or exact test dependency"
+    },
+    {
+      "path": "pyproject.toml",
+      "reason": "Required planner source, regression fixture or exact test dependency"
+    },
+    {
+      "path": "ink_planner",
+      "reason": "Required planner source, regression fixture or exact test dependency"
+    },
+    {
+      "path": "tests",
+      "reason": "Required planner source, regression fixture or exact test dependency"
+    },
+    {
+      "path": "research/database_query.py",
+      "reason": "Required planner source, regression fixture or exact test dependency"
+    },
+    {
+      "path": "research/rewrite_search.py",
+      "reason": "Required planner source, regression fixture or exact test dependency"
+    }
+  ],
+  "safe_to_remove": []
+}

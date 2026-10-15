@@ -86,11 +86,16 @@ def shift(t, amount, cutoff=0):
 
 
 def extract_hole(t, depth, local=0):
-    n = t['node']
-    if 'Bound' in n and local <= n['Bound'] < local + depth:
-        raise ValueError('hole captures pattern binder')
-    for child in children(t): extract_hole(child, depth, local + int('Lambda' in n))
-    return shift(t, -depth)
+    # Validate under nested binders, then shift the complete tree once. Shifting
+    # each child in isolation mistakes its enclosing local binders for captures.
+    def validate(term, nested):
+        n = term['node']
+        if 'Bound' in n and nested <= n['Bound'] < nested + depth:
+            raise ValueError('hole captures pattern binder')
+        for child in children(term):
+            validate(child, nested + int('Lambda' in n))
+    validate(t, local)
+    return shift(t, -depth, local)
 
 
 def match(pattern, t, params, bindings, depth=0):
