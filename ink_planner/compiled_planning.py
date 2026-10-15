@@ -119,7 +119,7 @@ def fingerprint(state):
     return identity(dict(source=state['source'],representation=(state.get('representation')or{}).get('representation'),
         definitions=state.get('definition_choices')or{},physical=state.get('physical'),maintained=state.get('maintained'),protocol=protocol_identity(state.get('protocol')),route=state.get('route'),resources=state.get('resources'),properties=sorted(facts)))
 
-def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_seconds=3600,memory_bytes=512_000_000,expansion_limit=32):
+def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_seconds=3600,memory_bytes=512_000_000,expansion_limit=32,priority_epoch=None):
     """The callback boundary admits complete proof chains, never hash equality.
     Invalid proofs do not mark their prospective target state as visited.
     """
@@ -129,10 +129,11 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
     # Zero requests exhaustive per-parent enumeration (the previous policy).
     if type(expansion_limit) is not int or not 0<=expansion_limit<=1_000_000:
         raise ValueError('invalid per-state expansion budget')
-    truncated=[];expanded=0
+    truncated=[];expanded=0;priority_rebuilds=0
     started=time.monotonic();first=check(initial)
     states={fingerprint(first):(initial,first)};agenda=[];serial=0;attempts=0;edges=[];rejections=[];retained=len(canonical(initial))+len(canonical(first))
     heapq.heappush(agenda,(priority(first),serial,fingerprint(first)))
+    epoch=priority_epoch()if priority_epoch else None
     stopped=None;unchecked_checks=0;memory_deferred=0
     while agenda:
         if time.monotonic()-started>=time_seconds:stopped='time';break
@@ -169,13 +170,20 @@ def explore(initial,expand,check,priority,budget=16384,state_limit=4096,time_sec
                     memory_deferred+=1
                     continue
                 retained+=size;states[child]=(candidate,checked);serial+=1
-                heapq.heappush(agenda,(priority(checked),serial,child))
+                score=priority(checked)
+                if priority_epoch and priority_epoch()!=epoch:
+                    # A failed optional goal must not mix old goal scores with
+                    # structural fallback scores in the pending frontier.
+                    epoch=priority_epoch();priority_rebuilds+=1
+                    agenda[:]=[(priority(states[key][1]),order,key)for _,order,key in agenda]
+                    heapq.heapify(agenda)
+                heapq.heappush(agenda,(score,serial,child))
         finally:
             if hasattr(expansion,'close'):expansion.close()
         if stopped:break
     return states,dict(attempts=attempts,admitted_states=len(states),edges=edges,rejected=rejections,
         stop_reason=stopped or('memory'if memory_deferred else'checker-time'if unchecked_checks else'expansion-budget'if truncated else'fixed-point'),unchecked_checks=unchecked_checks,memory_deferred=memory_deferred,remaining=len(agenda),retained_bytes=retained,
-        expanded_states=expanded,expansion_limit=expansion_limit,truncated_expansions=truncated,
+        expanded_states=expanded,expansion_limit=expansion_limit,truncated_expansions=truncated,priority_rebuilds=priority_rebuilds,
         elapsed_seconds=str(time.monotonic()-started),scope='Exact typed states and checked edges; bounded compilation, no runtime optimisation probes')
 
 class Planner:
@@ -194,11 +202,22 @@ class Planner:
         self.session=None;self.reused_steps=0;self.recipe_cache_hits=0;atexit.register(self.close)
         self.deadline=time.monotonic()+getattr(options,"time_seconds",getattr(options,"planning_seconds",3600))
         self.code_hash=code_fingerprint()
+        self.search_goal=None
+        if getattr(options,'search_goal',None):
+            from .search_goal import SearchGoal
+            self.search_goal=SearchGoal(compiler,options.search_goal.resolve(),options.search_goal_context.resolve(),
+                options.search_goal_entry,directory,core=options.search_goal_core,revision=options.search_goal_revision,
+                timeout=options.search_goal_timeout,compile_timeout=options.check_timeout,
+                memory_mb=options.search_goal_memory_mb,input_bytes=options.search_goal_input_bytes,node=options.search_goal_node,
+                context_wire=options.search_goal_context_wire)
     def invoke(self,*args,timeout=None):
         result=subprocess.run([str(self.compiler),*map(str,args)],capture_output=True,text=True,timeout=timeout or self.options.check_timeout)
         if result.returncode:raise ValueError(result.stderr[-3000:])
         return json.loads(result.stdout) if result.stdout.lstrip().startswith(('{','[')) else result.stdout
     def close(self):
+        if getattr(self,'search_goal',None)is not None:self.search_goal.close()
+        self.close_checker()
+    def close_checker(self):
         if self.session is not None:
             session=self.session;self.session=None
             session.kill();session.wait();session.stdin.close();session.stdout.close();
@@ -214,21 +233,21 @@ class Planner:
                 return json.loads(line)
             remaining=deadline-time.monotonic()
             if remaining<=0 or not select.select([self.session.stdout],[],[],remaining)[0]:
-                self.close();raise CheckerBudgetError('plan checker process time budget')
+                self.close_checker();raise CheckerBudgetError('plan checker process time budget')
             chunk=os.read(self.session.stdout.fileno(),65536)
             if not chunk or len(buffer)+len(chunk)>128_000_000:
-                self.close();raise ValueError('plan checker response byte budget')
+                self.close_checker();raise ValueError('plan checker response byte budget')
             buffer.extend(chunk)
     def send(self,payload,deadline):
         fd=self.session.stdin.fileno();os.set_blocking(fd,False);offset=0
         while offset<len(payload):
             remaining=deadline-time.monotonic()
             if remaining<=0 or not select.select([],[fd],[],remaining)[1]:
-                self.close();raise CheckerBudgetError('plan checker process time budget')
+                self.close_checker();raise CheckerBudgetError('plan checker process time budget')
             try:offset+=os.write(fd,payload[offset:offset+65536])
             except BlockingIOError:continue
             except BrokenPipeError:
-                self.close();raise ValueError('plan checker input closed')
+                self.close_checker();raise ValueError('plan checker input closed')
     def check(self,package):
         key=identity(dict(compiler=self.compiler_hash,package=package))
         if key in self.admissions:return self.admissions[key]
@@ -375,13 +394,25 @@ class Planner:
                     self.notes.append(dict(source=state['source'],recipe=job['recipe']['id'],status='deferred',reason='expansion closed before recipe completion'))
         if dropped:yield dict(status='search-limit',reason='proposal-buffer')
         if unfinished:yield dict(status='search-limit',reason='time')
-    def priority(self,state):
+    def structural_priority(self,state):
         # The structural hypothesis orders exploration only. It cannot select a
         # physically different implementation without comparable observations.
         from ink_knowledge.cost_models import structural_prices
         observed=getattr(self.options,'observed_frequencies',{})
         frequencies=observed if any(weight>0 for weight in observed.values()) else self.default_frequencies
         return structural_priority(state['core'],frequencies,structural_prices())
+
+    def priority(self,state):
+        default=self.structural_priority(state)
+        goal=getattr(self,'search_goal',None)
+        if goal is None:return default
+        observed=getattr(self.options,'observed_frequencies',{})
+        frequencies=observed if any(weight>0 for weight in observed.values())else self.default_frequencies
+        return goal.score(state,fingerprint(state),self.options.target,frequencies,default,deadline=self.deadline)
+
+    def priority_epoch(self):
+        goal=getattr(self,'search_goal',None)
+        return goal.generation if goal else 0
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -410,8 +441,19 @@ def main():
     p.add_argument('--work-workload',type=Path,help='reference-interpreter work of each candidate on these calls (deterministic, no timing)')
     p.add_argument('--work-model',type=Path,help='held-out-validated work model; selects by reference work when no comparable timings exist')
     p.add_argument('--keep-candidates',type=Path,help='write every admitted candidate package to this directory')
+    p.add_argument('--search-goal',type=Path,help='ordinary Ink exploration priority fn(search.Candidate, context)->f64')
+    p.add_argument('--search-goal-core',action='store_true',help='search goal input is a retained checked-core image')
+    p.add_argument('--search-goal-context',type=Path,help='typed goal context captured once for this compilation')
+    p.add_argument('--search-goal-context-wire',action='store_true',help='context file uses the exact compiled parameter value-wire schema')
+    p.add_argument('--search-goal-entry',default='priority');p.add_argument('--search-goal-revision',type=int,default=0)
+    p.add_argument('--search-goal-timeout',type=float,default=1.0);p.add_argument('--search-goal-memory-mb',type=int,default=128)
+    p.add_argument('--search-goal-input-bytes',type=int,default=4_000_000);p.add_argument('--search-goal-node',default='node')
     p.add_argument('--migration-count',type=int,default=0);p.add_argument('--memory-limit',type=int)
     args=effort_options(p.parse_args())
+    if bool(args.search_goal)!=bool(args.search_goal_context):p.error('search goal needs both source and context')
+    if (args.search_goal_core or args.search_goal_context_wire)and not args.search_goal:p.error('search goal format flags need --search-goal')
+    if not 0<=args.search_goal_revision<=9_007_199_254_740_991:p.error('bounded search goal revision required')
+    if not 0<args.search_goal_timeout<=30 or not 16<=args.search_goal_memory_mb<=512 or not 1<=args.search_goal_input_bytes<=4_000_000:p.error('bounded search goal process budgets required')
     if not 1<=args.recipe_workers<=8:p.error('recipe workers must be between 1 and 8')
     if not 0<=args.semantic_seconds<=86400:p.error('semantic seconds must be between 0 and 86400')
     if any(getattr(args,n)<0 for n in ['expansion_limit','budget','state_limit','time_seconds','memory_bytes','check_timeout','proposal_timeout','semantic_budget','candidate_limit']):p.error('planning budgets must be nonnegative')
@@ -469,6 +511,8 @@ def main():
                 if args.emit:planner.invoke('emit-plan',original,replay,'--core','--target',args.target,'-o',args.emit)
                 args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(packet)+b'\n')
                 receipt=dict(cached['receipt'],cache=dict(hit=True,key=cache_key,origin_created_unix=cached['created_unix'],scope='Historical search/cost diagnostics reused; only selected full chain freshly replayed'))
+                if planner.search_goal:
+                    receipt['search_goal']={**planner.search_goal.export(args.o),'historical':receipt.get('search_goal')}
                 from .planning_diagnostics import diagnose
                 receipt['diagnostics']=diagnose(receipt)
                 Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
@@ -476,7 +520,10 @@ def main():
                 planner.close();return
             except (ValueError,KeyError,TypeError,OSError,subprocess.TimeoutExpired)as error:
                 planner.notes.append(dict(recipe='compiled-cache',status='declined',reason=str(error)[-2000:]))
-        states,receipt=explore(initial,planner.expand,planner.check,planner.priority,args.budget,args.state_limit,args.time_seconds,args.memory_bytes,args.expansion_limit)
+        states,receipt=explore(initial,planner.expand,planner.check,
+            planner.priority if planner.search_goal else planner.structural_priority,
+            args.budget,args.state_limit,args.time_seconds,args.memory_bytes,args.expansion_limit,
+            planner.priority_epoch if planner.search_goal else None)
         if hashlib.sha256(compiler.read_bytes()).hexdigest()!=planner.compiler_hash or code_fingerprint()!=planner.code_hash:raise ValueError('compiler or planning knowledge changed during search')
         from ink_knowledge.implementation_candidates import publish_candidates
         packages=[package for package,_ in states.values()]
@@ -508,7 +555,7 @@ def main():
             from .measured_selection import shortlist,proposal_families
             controls=policy() if automatic_probe is not None else None;checked_states=[s for _,s in states.values()]
             families=proposal_families([fingerprint(s) for s in checked_states],receipt['edges'])
-            indices=shortlist(checked_states,planner.priority,controls['candidates'],families) if controls else list(range(len(packages)))
+            indices=shortlist(checked_states,planner.structural_priority,controls['candidates'],families) if controls else list(range(len(packages)))
             try:
                 target,workload,profile,acquisition=acquire(planner,store,[packages[i]for i in indices],[checked_states[i]for i in indices],[measurements[i]for i in indices],args.measure_workload,controls,automatic_inputs=automatic_probe is not None)
                 acquisition['shortlist']=dict(measured_indices=indices,admitted=len(packages),limit=controls['candidates'] if controls else len(packages),
@@ -593,6 +640,7 @@ def main():
             selection=selection,automatic_probe=automatic_probe,measurement_acquisition=acquisition,work_acquisition=work,selected=identity(selected),candidates=[dict(candidate=c,measurement=m,plan=identity(pkg),state=fingerprint(state),capability=state.get('capability'))for c,m,(pkg,state)in zip(candidates,measurements,states.values())]))
         receipt['recipe_scheduling']=dict(dispatches=planner.recipe_dispatches,
             scope='Actual worker/cache dispatch opportunities across expansions; least-served families within database priorities. No proof or profitability authority.')
+        if planner.search_goal:receipt['search_goal']=planner.search_goal.export(args.o)
         from .planning_diagnostics import diagnose
         receipt['diagnostics']=diagnose(receipt)
         Path(str(args.o)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')

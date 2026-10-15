@@ -418,6 +418,28 @@ producer stream before opening another, preserving the worker/process budget.
 It can miss a later proposal, so corpus evaluation must assess both coverage and
 selected performance before treating it as an improvement.
 
+## Compiled source exploration policies
+
+`ink-compile-plan --search-goal policy.ink --search-goal-context context.json`
+uses an ordinary pure Ink `fn(search.Candidate, Context)->f64` to order the compiled
+frontier. `std:search` exposes the complete checked implementation state as a flat,
+lossless node-and-edge document, plus target and entry frequencies. The context can
+contain explicitly trained parameters. The lower finite priority is explored first.
+No model action or application action is run implicitly.
+
+The compiler checks and emits the goal, captures typed context, and prepares it in
+a bounded Node worker. Per-request time/input limits and a Node heap setting are
+explicit. Invalid advice disables the optional worker and reprices the queued
+frontier using structural estimates. All proof/evidence gates remain unchanged;
+recipe dispatch, inner semantic search and measurement shortlisting retain their
+existing policies. Model/source/context sidecars are retained for replay, while
+cache hits replay the whole selected plan and distinguish historical advice.
+
+The [language contract and complete training example](https://github.com/siliconjungle/ink-lang/blob/main/docs/learned-search.md)
+describe JSON/wire context formats, revision/core replay flags, limits, tests and
+the remaining generalization/performance work. This policy is opt-in; the default
+planner starts no model worker.
+
 Measurement deduplication includes maintained views and state protocols. These
 can change execution without changing source identity and must not disappear as
 baseline duplicates. Static maintained-fold coverage counts the final package,
