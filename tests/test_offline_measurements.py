@@ -2,8 +2,17 @@ import hashlib,json,subprocess,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from ink_knowledge import Store
-from ink_planner.offline_measurements import read_workload,independent_workloads,acquire,validated,RUNNER
+from ink_planner.offline_measurements import read_workload,independent_workloads,acquire,validated,reference_receipt,RUNNER
 class OfflineMeasurements(unittest.TestCase):
+    def test_reference_receipts_require_exact_source_function_and_fingerprint(self):
+        valid=dict(schema=1,semantics='ink-reference-call-v1',input_core_sha256='a'*64,selected_core_sha256='a'*64,
+                   function='run',input_sha256='b'*64,value={'F32Bits':0x80000000})
+        self.assertEqual(reference_receipt(valid,'a'*64,'run'),({'F32Bits':0x80000000},'b'*64))
+        for name,value in [('schema',True),('semantics','other'),('input_core_sha256','c'*64),('selected_core_sha256','c'*64),
+                           ('function','other'),('input_sha256',None),('input_sha256','B'*64),('input_sha256','b'*63)]:
+            with self.subTest(name=name,value=value),self.assertRaises(ValueError):reference_receipt(dict(valid,**{name:value}),'a'*64,'run')
+        for value in [1,{},dict(valid,extra=1),{k:v for k,v in valid.items()if k!='input_sha256'}]:
+            with self.assertRaises(ValueError):reference_receipt(value,'a'*64,'run')
     def test_input_fingerprints_use_typed_values_not_json_spelling(self):
         with tempfile.TemporaryDirectory()as tmp:
             root=Path(tmp);artifact=root/'baseline.mjs'

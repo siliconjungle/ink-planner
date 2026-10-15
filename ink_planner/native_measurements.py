@@ -57,8 +57,8 @@ def _measure(planner,artifacts,phases,controls,deadline):
         return seconds
     cargo=shutil.which('cargo')
     if not cargo:raise ValueError('native offline acquisition requires Cargo')
-    directory=planner.directory/'native-measurements';(directory/'src').mkdir(parents=True)
-    dependencies=['serde_json={version="=1.0.151",features=["float_roundtrip"]}'];lanes=[]
+    directory=Path(tempfile.mkdtemp(prefix='native-measurements-',dir=planner.directory));(directory/'src').mkdir()
+    dependencies=['serde_json={version="=1.0.151",features=["float_roundtrip"]}','sha2="=0.10.9"'];lanes=[]
     for i,artifact in enumerate(artifacts):
         name=f'variant_{i}'
         dependencies.append(f'{name}={{package={json.dumps(artifact["package"])},path={json.dumps(artifact["path"])}}}')
@@ -78,20 +78,22 @@ def _measure(planner,artifacts,phases,controls,deadline):
     result=subprocess.run([cargo,'build','--release','--offline','--manifest-path',str(directory/'Cargo.toml')],env=environment,capture_output=True,text=True,timeout=remaining())
     if result.returncode:raise ValueError('offline adapter build failed: '+result.stderr[-3000:])
     build_seconds=str(time.monotonic()-started)
-    request=directory/'request.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=phases,measurement=controls),allow_nan=False))
+    request=directory/'request.json';prepared=dict(artifacts=artifacts,phases=phases,measurement=controls)
     executable=Path(environment['CARGO_TARGET_DIR'])/'release/ink-offline-calls'
     processes=controls['processes']if controls else getattr(planner.options,'measure_processes',3)
     if type(processes)is not int or not 1<=processes<=8:raise ValueError('measurement process count')
     reports=[]
     for process in range(processes):
-        payload=json.loads(request.read_text());payload['process_index']=process
-        request.write_text(json.dumps(payload,allow_nan=False))
-        result,peak=run_observed([str(executable),str(request)],timeout=remaining())
+        payload=dict(prepared,process_index=process)
+        raw=json.dumps(payload,allow_nan=False).encode()
+        request.write_bytes(raw)
+        request_sha256=hashlib.sha256(raw).hexdigest()
+        result,peak=run_observed([str(executable),str(request),request_sha256],timeout=remaining())
         if result.returncode:raise ValueError('native offline measurement failed: '+result.stderr[-2000:])
         report=json.loads(result.stdout)
         for row in report['rows']:row['peak_rss_bytes']=peak
         reports.append(report)
     from .process_measurements import combine
-    return combine(reports,artifacts),dict(build_seconds=build_seconds,lockfile_sha256=hashlib.sha256((directory/'Cargo.lock').read_bytes()).hexdigest(),
+    return combine(reports,artifacts,fingerprints=True),dict(project_path=str(directory),build_seconds=build_seconds,lockfile_sha256=hashlib.sha256((directory/'Cargo.lock').read_bytes()).hexdigest(),
                                         executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
                                         scope='Exact dependency versions, offline build; existing generated JSON call and portable snapshot ABIs; OS wait4 peak RSS for each complete host launch, including all variants and adapter; not per-candidate heap')

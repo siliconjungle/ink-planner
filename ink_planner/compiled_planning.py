@@ -422,7 +422,7 @@ def main():
     if not 1<=args.measure_processes<=8:p.error('measurement processes must be between 1 and 8')
     if not 0<=args.minimum_measured_gain_ppm<1_000_000:p.error('minimum measured gain must be between 0 and 999999 ppm')
     if args.measure_holdout and not args.measure_workload:p.error('holdout requires a measurement workload')
-    if args.measure_holdout and args.target!='javascript':p.error('typed holdout requires the JavaScript measurement adapter')
+    if args.measure_holdout and args.target not in {'javascript','rust'}:p.error('typed holdout requires the JavaScript or native Rust measurement adapter')
     if args.measure_holdout:
         from .offline_measurements import independent_workloads
         independent_workloads(args.measure_workload,args.measure_holdout)
@@ -543,7 +543,8 @@ def main():
             if acquisition is not None:
                 if args.measure_holdout:
                     selected_indices=[0] if chosen==measurements[0] else [0,measurements.index(chosen)]
-                    held_target,held_workload,held_profile,held_acquisition=acquire(planner,store,[packages[i]for i in selected_indices],[list(states.values())[i][1]for i in selected_indices],[measurements[i]for i in selected_indices],args.measure_holdout)
+                    held_target,held_workload,held_profile,held_acquisition=acquire(planner,store,[packages[i]for i in selected_indices],[list(states.values())[i][1]for i in selected_indices],[measurements[i]for i in selected_indices],args.measure_holdout,
+                        disjoint_inputs=acquisition['acquisition']['input_fingerprints'])
                     if set(acquisition['acquisition']['input_fingerprints'])&set(held_acquisition['acquisition']['input_fingerprints']):raise ValueError('holdout normalized typed inputs overlap selection inputs')
                     if held_workload==workload:raise ValueError('holdout must have independent input provenance')
                     if held_profile!=profile:raise ValueError('holdout must retain the lifecycle objective weights')

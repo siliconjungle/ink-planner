@@ -1,7 +1,7 @@
 """Normal compilation creates its own typed selection inputs and proof packets.
 Development integration only; performance generalisation uses the reserved corpus.
 """
-import json,os,subprocess,sys,tempfile
+import hashlib,json,os,subprocess,sys,tempfile
 from pathlib import Path
 from ink_knowledge import Store,semantic_entry
 from ink_knowledge.store import entry
@@ -13,6 +13,8 @@ target=sys.argv[2]if len(sys.argv)>2 else'javascript'
 with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-')as tmp:
     root=Path(tmp);source=root/'example.ink'
     source.write_text('module example;pub fn run(xs:List<u32>,n:u32)->List<u32>{return xs.map(fn(x)=>(x*13)+7).take(n);}\n')
+    if target=='rust':
+        source.write_text(source.read_text()+'pub fn floating(x:f32)->f32{return x;}\n')
     objects=[semantic_entry(v)for _,v in named_laws()]
     objects.append(entry('definition','ink-semantic-producers-v1',dict(module='producers.list_slice_laws')))
     store=Store.publish(root/'knowledge',objects);store.refresh_index()
@@ -70,6 +72,43 @@ with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-'
     assert result.returncode==0,result.stderr
     warm=json.loads(Path(str(plan)+'.receipt.json').read_text())
     assert warm['cache']['hit'] and json.loads(plan.read_text())==packet,warm
+    if target=='rust':
+        # Real explicit native acquisition must retain typed fingerprints and
+        # finish its independent holdout path, even when baseline is retained.
+        def workload(path,xs,n,scalar):
+            spec=dict(schema=1,phases={'call:run':[dict(function='run',args=[xs,n])],
+                'call:floating':[dict(function='floating',args=[scalar])]},
+                profile={'call:run':1,'call:floating':1},
+                workload=dict(shape={'fixture':'typed holdout'},distribution='controls',concurrency=1,residency='complete call'))
+            path.write_text(json.dumps(spec))
+        training,holdout,bad=root/'training.json',root/'holdout.json',root/'alias.json'
+        workload(training,[7,19,43,91,83],3,1.1)
+        workload(holdout,[11,23,47,97],2,1.2)
+        workload(bad,[11,23,47,97],2,1.10000001)
+        from ink_planner.offline_measurements import independent_workloads
+        independent_workloads(training,bad)  # Raw JSON alone cannot find this alias.
+        def explicit(workload_path,label):
+            cmd=list(command);destination=root/(label+'.plan.json');emitted=root/(label+'.rs')
+            cmd[cmd.index('-o')+1]=str(destination);cmd[cmd.index('--emit')+1]=str(emitted)
+            cmd+=['--measure-workload',str(training),'--measure-holdout',str(workload_path),'--cache','off','--measure-processes','3']
+            result=subprocess.run(cmd,env=environment,text=True,capture_output=True,timeout=240)
+            return result,destination,emitted
+        valid,valid_plan,_=explicit(holdout,'independent')
+        assert valid.returncode==0,valid.stderr
+        observed=json.loads(Path(str(valid_plan)+'.receipt.json').read_text())
+        selected=observed['measurement_acquisition']['acquisition'];held=observed['selection']['holdout']['acquisition']['acquisition']
+        assert len(selected['input_fingerprints'])==len(held['input_fingerprints'])==2
+        assert not set(selected['input_fingerprints'])&set(held['input_fingerprints'])
+        assert {row['process']for row in selected['rows']}=={0,1,2}
+        assert {row['process']for row in held['rows']}=={0,1,2}
+        rejected,bad_plan,bad_output=explicit(bad,'overlap')
+        assert rejected.returncode!=0
+        assert 'holdout normalized typed inputs overlap selection inputs'in rejected.stderr,rejected.stderr
+        assert not bad_plan.exists()and not bad_output.exists()
+        invalid_digest=hashlib.sha256(bad.read_bytes()).hexdigest()
+        assert all(json.loads(path.read_text())['workload']['shape']['inputs_sha256']!=invalid_digest
+                   for path in (store.data/'observations').glob('*.json'))
+        print('native independent holdout completed; rounded-float alias rejected before held-out cost publication')
     if target=='javascript':
         assert warm['diagnostics']['fresh_work']==dict(search=False,measurements=False,selected_replay_reported=True)
         # Keep the source/key bindings but corrupt the proof-bearing packet.

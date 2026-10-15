@@ -1,5 +1,5 @@
 """Actual child lifecycle/RSS evidence, independent of compiler cost ranking."""
-import json,os,shutil,subprocess,sys,tempfile,time,unittest
+import hashlib,json,os,shutil,subprocess,sys,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from ink_planner.native_measurements import run_observed,measure
@@ -55,7 +55,8 @@ class NativeProcessMeasurements(unittest.TestCase):
         with tempfile.TemporaryDirectory()as tmp:
             root=Path(tmp);directory=root/'planning';directory.mkdir()
             artifacts=[]
-            for name,body in [('baseline','args[0].clone()'),('wrong','if function=="unsigned"{serde_json::json!(args[0].as_u64().unwrap()+1)}else{args[0].clone()}')]:
+            for name,body in [('baseline','args[0].clone()'),('equivalent','args[0].clone()'),
+                              ('wrong','if function=="unsigned"{serde_json::json!(args[0].as_u64().unwrap()+1)}else{args[0].clone()}')]:
                 crate=root/name;(crate/'src').mkdir(parents=True)
                 (crate/'Cargo.toml').write_text('[package]\nname="'+name+'"\nversion="0.1.0"\nedition="2021"\n[workspace]\n[dependencies]\nserde_json={version="=1.0.151",features=["float_roundtrip"]}\n')
                 (crate/'src/lib.rs').write_text('''use serde_json::Value;
@@ -71,18 +72,43 @@ impl State {
             phases={'unsigned':[dict(function='unsigned',args=[2**53],expected=2**53)],
                     'signed':[dict(function='signed',args=[-2**63],expected=-2**63)],
                     'floating':[dict(function='floating',args=[-0.0],expected=-0.0)]}
+            fingerprints=[]
+            for calls in phases.values():
+                for call in calls:
+                    # Transport fixtures only; real acquisition gets these
+                    # fingerprints from the source-bound reference decoder.
+                    call['input_sha256']=hashlib.sha256(json.dumps([call['function'],call['args']]).encode()).hexdigest()
+                    fingerprints.append(call['input_sha256'])
             planner=SimpleNamespace(root=root,directory=directory,options=SimpleNamespace(measure_timeout=120,measure_processes=2))
             report,build=measure(planner,artifacts,phases,dict(processes=2,rounds=9,minimum_batch_ms=1,maximum_calls_per_sample=1))
             self.assertEqual(report['processes'],2)
-            self.assertEqual({row['measurement']for row in report['rows']},{'baseline'})
+            self.assertEqual({row['measurement']for row in report['rows']},{'baseline','equivalent'})
             self.assertEqual({row['measurement']for row in report['rejected']},{'wrong'})
             self.assertEqual({row['process']for row in report['rows']},{0,1})
+            self.assertEqual(report['input_fingerprints'],sorted(fingerprints))
             self.assertTrue(all(type(row['peak_rss_bytes'])is int and row['peak_rss_bytes']>0 for row in report['rows']))
             self.assertIn('wait4',build['scope'])
             # Exercise numeric edge cases in the exact runner source as well.
             env=dict(os.environ,CARGO_TARGET_DIR=str(root/'offline-native-target'))
-            result=subprocess.run(['cargo','test','--release','--offline','--manifest-path',str(directory/'native-measurements/Cargo.toml')],env=env,capture_output=True,text=True,timeout=120)
+            project=Path(build['project_path'])
+            result=subprocess.run(['cargo','test','--release','--offline','--manifest-path',str(project/'Cargo.toml')],env=env,capture_output=True,text=True,timeout=120)
             self.assertEqual(result.returncode,0,result.stderr[-3000:])
             self.assertIn('2 passed',result.stdout)
+            executable=root/'offline-native-target/release/ink-offline-calls'
+            request=project/'request.json'
+            good_hash=hashlib.sha256(request.read_bytes()).hexdigest()
+            # Changes after preparation cannot receive costs under the old
+            # source-bound fingerprints, even if the new outputs would match.
+            changed=json.loads(request.read_text());changed['phases']['unsigned'][0]['args']=[2**53+2]
+            changed['phases']['unsigned'][0]['expected']=2**53+2
+            request.write_text(json.dumps(changed))
+            result=subprocess.run([str(executable),str(request),good_hash],capture_output=True,text=True,timeout=15)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('request hash mismatch',result.stderr)
+            changed['phases']['unsigned'][0].pop('input_sha256')
+            request.write_text(json.dumps(changed))
+            result=subprocess.run([str(executable),str(request),hashlib.sha256(request.read_bytes()).hexdigest()],capture_output=True,text=True,timeout=15)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('reference input fingerprint required',result.stderr)
 
 if __name__=='__main__':unittest.main()

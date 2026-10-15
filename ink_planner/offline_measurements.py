@@ -2,7 +2,7 @@
 JavaScript trusted calls and native Rust JSON calls have distinct boundaries.
 Other execution ABIs decline explicitly; observations never substitute for proof.
 """
-import hashlib,json,platform,re,shutil,subprocess,time
+import hashlib,json,platform,re,shutil,subprocess,tempfile,time
 from pathlib import Path
 from ink_knowledge import canonical,identity,Store
 from .representation_selection import phase_workload
@@ -69,13 +69,24 @@ def target_context(planner,state=False,encoded=False):
         executable=shutil.which('rustc')
         if not executable:raise ValueError('offline measurement requires Rust')
         version=subprocess.check_output([executable,'--version'],text=True).strip()
-        bridge='generated-json-call-v2;mean-complete-call;full-bit-aware-output-consumption;whole-host-peak-rss-wait4-v1'
+        bridge='generated-json-call-v3;reference-typed-inputs-v1;sealed-request-v1;mean-complete-call;full-bit-aware-output-consumption;whole-host-peak-rss-wait4-v1'
     else:raise ValueError('no installed offline measurement adapter for '+planner.options.target)
     return dict(hardware=platform.machine()+':'+platform.processor()+':'+platform.node(),driver=platform.system()+':'+platform.release(),toolchain='compiler:'+planner.compiler_hash+';host:'+version+';adapter:'+hashlib.sha256(runner.read_bytes()).hexdigest(),backend=planner.options.target,bridge=bridge)
 
 def artifact_digest(path):
     if path.is_file():return hashlib.sha256(path.read_bytes()).hexdigest()
     return identity({str(p.relative_to(path)):hashlib.sha256(p.read_bytes()).hexdigest()for p in sorted(path.rglob('*'))if p.is_file()})
+
+def reference_receipt(receipt,source,function):
+    """Bind an input identity to the reference decoder, not raw JSON spelling."""
+    fields={'schema','semantics','input_core_sha256','selected_core_sha256','function','input_sha256','value'}
+    if not isinstance(receipt,dict)or set(receipt)!=fields or type(receipt['schema'])is not int or receipt['schema']!=1 or receipt['semantics']!='ink-reference-call-v1':
+        raise ValueError('invalid reference typed-input receipt')
+    if receipt['input_core_sha256']!=source or receipt['selected_core_sha256']!=source or receipt['function']!=function:
+        raise ValueError('reference typed-input receipt source/function mismatch')
+    fingerprint=receipt['input_sha256']
+    if not isinstance(fingerprint,str)or not re.fullmatch('[0-9a-f]{64}',fingerprint):raise ValueError('invalid reference input fingerprint')
+    return receipt['value'],fingerprint
 
 def native_project(source,directory,package):
     """Wrap literal emitted Rust without changing any generated source bytes."""
@@ -84,15 +95,19 @@ def native_project(source,directory,package):
     (directory/'Cargo.toml').write_text('[package]\nname='+json.dumps(package)+'\nversion="0.1.0"\nedition="2021"\n[lib]\ncrate-type=["rlib"]\n[workspace]\n[dependencies]\nnum-bigint="=0.4.8"\nsha2="=0.10.9"\nserde_json={version="=1.0.151",features=["float_roundtrip"]}\n')
     return directory
 
-def acquire(planner,store,packages,states,measurements,path,controls=None):
+def acquire(planner,store,packages,states,measurements,path,controls=None,*,disjoint_inputs=()):
     acquisition_started=time.monotonic();deadline=acquisition_started+planner.options.measure_timeout
     def remaining():
         seconds=deadline-time.monotonic()
         if seconds<=0:raise ValueError('offline measurement acquisition time budget')
         return min(seconds,planner.options.check_timeout)
     spec,digest=read_workload(path)
+    if not isinstance(disjoint_inputs,(list,tuple,set,frozenset))or len(disjoint_inputs)>512:raise ValueError('bounded disjoint input fingerprints required')
+    if any(not isinstance(x,str)or not re.fullmatch('[0-9a-f]{64}',x)for x in disjoint_inputs):raise ValueError('invalid disjoint input fingerprints')
+    forbidden=set(disjoint_inputs)
     if spec['schema']==2:
-        from .state_measurements import acquire as acquire_state
+        from .state_measurements import acquire as acquire_state,fingerprints
+        if forbidden&fingerprints(spec):raise ValueError('holdout state histories overlap selection histories')
         return acquire_state(planner,store,packages,states,measurements,path,controls)
     if spec['schema']==3 and planner.options.target!='javascript':raise ValueError('encoded lifecycle adapter requires JavaScript')
     target=target_context(planner,encoded=spec['schema']==3);controls=controls or {}
@@ -103,33 +118,42 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     Store.validate_observation(dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=measurements[0],target=target,workload=workload,metrics=dict(complete_call_ns=['0'],peak_bytes=None)))
     reference_budget=getattr(planner.options,'reference_budget',100_000_000)
     if type(reference_budget)is not int or not 1<=reference_budget<=10_000_000_000:raise ValueError('reference evaluation budget')
-    phases={};oracle_started=time.monotonic()
+    # Training and rejection-only holdout must not overwrite one another's
+    # native libraries, requests, locks or executable project inputs.
+    directory=Path(tempfile.mkdtemp(prefix='measurement-',dir=planner.directory))
+    phases={};input_fingerprints=set();oracle_started=time.monotonic()
     # Reference execution is independently implemented and outside timing.
     for phase,rows in spec['phases'].items():
         phases[phase]=[]
         for i,row in enumerate(rows):
-            args=planner.directory/'reference-args.json';args.write_text(json.dumps(row['args'],allow_nan=False))
-            expected=planner.invoke('run',planner.original,row['function'],args,'--core','--evaluation-budget',str(reference_budget),timeout=remaining())
+            args=directory/'reference-args.json';args.write_text(json.dumps(row['args'],allow_nan=False))
+            extra=['--input-receipt']if planner.options.target=='rust'else []
+            expected=planner.invoke('run',planner.original,row['function'],args,'--core','--evaluation-budget',str(reference_budget),*extra,timeout=remaining())
             if isinstance(expected,str):expected=json.loads(expected)
-            phases[phase].append(dict(row,expected=expected))
+            call=dict(row,expected=expected)
+            if extra:
+                value,fingerprint=reference_receipt(expected,packages[0]['input_core_sha256'],row['function'])
+                call.update(expected=value,input_sha256=fingerprint);input_fingerprints.add(fingerprint)
+            phases[phase].append(call)
+    if forbidden&input_fingerprints:raise ValueError('holdout normalized typed inputs overlap selection inputs')
     reference_seconds=str(time.monotonic()-oracle_started)
     artifacts=[];rejected=[]
     for package,state,measurement in zip(packages,states,measurements):
         if not state.get('capability',{}).get('emittable',True):
             rejected.append(dict(measurement=measurement,reason='backend capability'));continue
-        staged=planner.directory/(measurement+'.plan.json');staged.write_bytes(canonical(package)+b'\n')
-        artifact=planner.directory/(measurement+('.mjs'if planner.options.target=='javascript'else'.rust'));begin=time.monotonic()
+        staged=directory/(measurement+'.plan.json');staged.write_bytes(canonical(package)+b'\n')
+        artifact=directory/(measurement+('.mjs'if planner.options.target=='javascript'else'.rust'));begin=time.monotonic()
         try:
             planner.invoke('emit-plan',planner.original,staged,'--core','--target',planner.options.target,'-o',artifact,timeout=remaining())
             package_name='ink-observed-'+measurement[:24]
-            if planner.options.target=='rust':artifact=native_project(artifact,planner.directory/(measurement+'.native'),package_name)
+            if planner.options.target=='rust':artifact=native_project(artifact,directory/(measurement+'.native'),package_name)
             artifacts.append(dict(measurement=measurement,path=str(artifact),package=package_name,artifact_sha256=artifact_digest(artifact),emission_seconds=str(time.monotonic()-begin)))
         except (ValueError,OSError,subprocess.TimeoutExpired)as error:rejected.append(dict(measurement=measurement,reason=str(error)[-2000:]))
     if not artifacts or artifacts[0]['measurement']!=measurements[0]:raise ValueError('baseline could not be measured')
     native_build=None
     if planner.options.target=='javascript':
         from .value_transfer import transfer
-        request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=transfer(phases),measurement=controls,exact_transfer=True),allow_nan=False))
+        request=directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=transfer(phases),measurement=controls,exact_transfer=True),allow_nan=False))
         processes=controls['processes'] if controls else getattr(planner.options,'measure_processes',3)
         if type(processes) is not int or not 1<=processes<=8:raise ValueError('measurement process count')
         reports=[]
@@ -144,6 +168,8 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     else:
         from .native_measurements import measure
         report,native_build=measure(planner,artifacts,phases,controls,deadline)
+        if report['input_fingerprints']!=sorted(input_fingerprints):raise ValueError('native typed-input receipt binding mismatch')
+    if forbidden&set(report['input_fingerprints']):raise ValueError('holdout normalized typed inputs overlap selection inputs')
     # Do not persist observations under a fingerprint that changed during the
     # acquisition, even when final compiler replay would reject the build.
     from .compiled_planning import code_fingerprint
