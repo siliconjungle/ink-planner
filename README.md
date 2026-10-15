@@ -286,6 +286,9 @@ policy, host, options and supplied evidence. Every hit freshly replays the full
 selected chain and target before emission. Historical search/measurement costs
 are marked separately in diagnostics. `--cache off` requests fresh planning.
 The distribution forwards this as `--planning-cache off`.
+Known host flags, heap settings and native build configuration also bind cost
+reuse; see [measurement context](docs/measurement-context.md) for the recorded
+components, frozen publication binding and remaining limits.
 
 Development checks: `tests/automatic_measurement_integration.py`,
 `tests/composed_templates_integration.py`, support-certificate/matcher/selection
@@ -330,8 +333,8 @@ missing evidence retains the baseline. This includes extrema and grouped views.
 Each history resets to the same portable seed outside its timed window. The
 independent source evaluator supplies all results, errors, versions, events and
 exact snapshots. These must match before and after timing, and captured inputs
-must remain owned. Each candidate is measured in separate fresh processes; peak
-RSS includes the host and adapter. Setup, module load, checkpoint and restore costs
+must remain owned. Fresh processes interleave isolated candidate states; peak
+RSS conservatively includes the whole host, all candidates and the adapter. Setup, module load, checkpoint and restore costs
 have explicit weights. Missing comparable evidence retains the baseline.
 
 Holdout histories must differ from training transition histories, although setup

@@ -4,7 +4,8 @@ Every measured history starts from the same portable source snapshot. Setup,
 checkpoint and restore have explicit phases. Candidate state is isolated; fresh processes interleave the admitted candidates.
 RSS conservatively includes all candidates and the adapter, never a heap guess.
 """
-import hashlib,json,re,shutil,subprocess,time
+import hashlib,json,re,subprocess,time
+from .measurement_context import execution_context,node_command
 from pathlib import Path
 from ink_knowledge import canonical,Store
 from .representation_selection import phase_workload
@@ -51,7 +52,8 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         if n<=0:raise ValueError('state lifecycle acquisition deadline')
         return min(n,planner.options.check_timeout)
     from .offline_measurements import target_context
-    target=target_context(planner,state=True)
+    execution=execution_context(planner.options,state=True)
+    target=target_context(planner,state=True,execution=execution)
     workload=dict(spec['workload'])
     if set(workload)!={'shape','distribution','concurrency','residency'}or workload['concurrency']!=1:raise ValueError('serial state workload provenance')
     workload['shape']=dict(inputs_sha256=digest,declared=workload['shape'])
@@ -77,8 +79,7 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
             artifacts.append(dict(measurement=measurement,path=str(artifact),artifact_sha256=artifact_digest(artifact),emission_seconds=str(time.monotonic()-begin)))
         except (ValueError,OSError,subprocess.TimeoutExpired)as e:rejected.append(dict(measurement=measurement,reason=str(e)[-2000:]))
     if not artifacts or artifacts[0]['measurement']!=measurements[0]:raise ValueError('state baseline could not be emitted')
-    node=shutil.which('node')
-    inspected=subprocess.run([node,str(RUNNER),'--describe',artifacts[0]['path']],capture_output=True,text=True,timeout=remaining())
+    inspected=subprocess.run(node_command(planner.options,RUNNER,'--describe',artifacts[0]['path'],describe=True),capture_output=True,text=True,timeout=remaining())
     if inspected.returncode:raise ValueError('state source schema: '+inspected.stderr[-2000:])
     metadata=json.loads(inspected.stdout);processes=getattr(planner.options,'measure_processes',3)
     if type(processes)is not int or not 1<=processes<=8:raise ValueError('state process bound')
@@ -87,7 +88,7 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     packet=dict(artifacts=artifacts,metadata=metadata,setup=transfer(spec['setup']),setup_expected=setup_expected,seed=seed,phases=phases)
     for process in range(processes):
         request.write_text(json.dumps(dict(packet,process_index=process),allow_nan=False))
-        r=subprocess.run([node,'--expose-gc','--max-old-space-size='+str(max(32,min(4096,getattr(planner.options,'memory_bytes',512000000)//1000000))),str(RUNNER),str(request)],capture_output=True,text=True,timeout=remaining())
+        r=subprocess.run(node_command(planner.options,RUNNER,request,state=True),capture_output=True,text=True,timeout=remaining())
         if r.returncode:raise ValueError('paired state acquisition: '+r.stderr[-2000:])
         report=json.loads(r.stdout)
         if report.get('pairing')!='interleaved-state-lifecycle-v1':raise ValueError('state pairing receipt missing')
@@ -106,6 +107,6 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
                  metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=row['peak_rss_bytes']))
         Store.validate_observation(obj);observations.append(store.observe(obj))
     report=dict(schema=3,pairing='interleaved-state-lifecycle-v1',processes=processes,rows=reports,rejected=rejected,module_load=module_load,input_fingerprints=sorted(fingerprints(spec)))
-    return target,workload,spec['profile'],dict(schema=2,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-start),observations=observations,
+    return target,workload,spec['profile'],dict(schema=2,adapter=target['bridge'],execution_context=execution,workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-start),observations=observations,
         validated_measurements=sorted(accepted),artifacts=artifacts,native_build=None,rejected=rejected,acquisition=report,
         scope='Offline independent state histories, exact outcomes/events/versions/portable snapshots; interleaved isolated candidate states in fresh processes; shared-process peak RSS bounds all candidates plus adapter; explicit setup/checkpoint/restore phases; no runtime probes')

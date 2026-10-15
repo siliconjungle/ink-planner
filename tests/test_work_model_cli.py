@@ -65,6 +65,17 @@ class WorkModelCLI(unittest.TestCase):
             self.assertTrue(receipt['cache']['hit'])
             self.assertEqual(explore_mock.call_count, searches)
 
+            # A context change after the initial lookup must not publish the
+            # historical choice or re-key its old costs under a new context.
+            from types import SimpleNamespace
+            from ink_planner.compiled_cache import execution_binding
+            binding = execution_binding(planner, SimpleNamespace(target='javascript', memory_bytes=512000000))
+            with patch('ink_planner.compiled_cache.execution_binding',
+                       side_effect=[binding, dict(binding, changed=True), dict(binding, changed=True)]):
+                with self.assertRaisesRegex(ValueError, 'execution context changed during planning'):
+                    run(opted_in)
+            self.assertTrue(any(n.get('reason')=='execution context changed during cached replay' for n in planner.notes))
+
             model_value['min_gain'] = 1000
             model.write_text(json.dumps(model_value))
             selected, receipt = run(opted_in)
