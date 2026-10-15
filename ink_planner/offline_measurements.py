@@ -9,6 +9,27 @@ from .representation_selection import phase_workload
 
 RUNNER=Path(__file__).with_name('measure_calls.mjs')
 
+def has_refinement(package):
+    """Discovery hint only: the compiler rechecks the complete plan below."""
+    if isinstance(package,dict):
+        return package.get('contract_refinement') is not None or any(has_refinement(v) for v in package.values())
+    return isinstance(package,list) and any(has_refinement(v) for v in package)
+
+def refinement_phases(planner,package,state,staged,phases,timeout):
+    """An inexact refinement needs its own independently interpreted oracle.
+
+    Baseline equality would reject valid approximate/loose specifications. Never
+    derive the expected result from emitted code or from candidate metadata.
+    """
+    calls=[dict(function=row['function'],args=row['args'])for rows in phases.values()for row in rows]
+    if not 1<=len(calls)<=512:raise ValueError('refinement reference requires 1..512 calls')
+    request=planner.directory/'refinement-reference-calls.json';request.write_text(json.dumps(calls,allow_nan=False))
+    result=planner.invoke('plan-work',planner.original,staged,request,'--core',timeout=timeout)
+    if not isinstance(result,dict) or result.get('status')!='checked' or result.get('semantics')!='ink-reference-work-v1' or result.get('input')!=package['input_core_sha256'] or result.get('plan_sha256')!=identity(package) or result.get('selected')!=state.get('source') or len(result.get('values',[]))!=len(calls):
+        raise ValueError('refinement reference binding mismatch')
+    values=iter(result['values'])
+    return {phase:[dict(row,expected=next(values))for row in rows]for phase,rows in phases.items()}
+
 def validated(measurements,acquisition):
     """Historical costs cannot resurrect a freshly rejected implementation."""
     accepted=set(acquisition['validated_measurements'])
@@ -78,12 +99,12 @@ def artifact_digest(path):
 
 def native_project(source,directory,package):
     """Wrap literal emitted Rust without changing any generated source bytes."""
-    (directory/'src').mkdir(parents=True)
+    (directory/'src').mkdir(parents=True,exist_ok=True)
     shutil.copyfile(source,directory/'src/lib.rs')
     (directory/'Cargo.toml').write_text('[package]\nname='+json.dumps(package)+'\nversion="0.1.0"\nedition="2021"\n[lib]\ncrate-type=["rlib"]\n[workspace]\n[dependencies]\nnum-bigint="=0.4.8"\nsha2="=0.10.9"\nserde_json={version="=1.0.151",features=["float_roundtrip"]}\n')
     return directory
 
-def acquire(planner,store,packages,states,measurements,path,controls=None):
+def acquire(planner,store,packages,states,measurements,path,controls=None,*,automatic_inputs=False):
     acquisition_started=time.monotonic();deadline=acquisition_started+planner.options.measure_timeout
     def remaining():
         seconds=deadline-time.monotonic()
@@ -91,6 +112,7 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         return min(seconds,planner.options.check_timeout)
     spec,digest=read_workload(path)
     if spec['schema']==2:
+        if automatic_inputs:raise ValueError('automatic pure probes do not author state workloads')
         from .state_measurements import acquire as acquire_state
         return acquire_state(planner,store,packages,states,measurements,path,controls)
     if spec['schema']==3 and planner.options.target!='javascript':raise ValueError('encoded lifecycle adapter requires JavaScript')
@@ -100,15 +122,13 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     workload['shape']=dict(inputs_sha256=digest,declared=workload['shape'])
     if workload['concurrency']!=1:raise ValueError('serial call adapter requires concurrency=1')
     Store.validate_observation(dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=measurements[0],target=target,workload=workload,metrics=dict(complete_call_ns=['0'],peak_bytes=None)))
-    phases={};oracle_started=time.monotonic()
-    # Reference execution is independently implemented and outside timing.
-    for phase,rows in spec['phases'].items():
-        phases[phase]=[]
-        for i,row in enumerate(rows):
-            args=planner.directory/'reference-args.json';args.write_text(json.dumps(row['args'],allow_nan=False))
-            expected=planner.invoke('run',planner.original,row['function'],args,'--core',timeout=remaining())
-            if isinstance(expected,str):expected=json.loads(expected)
-            phases[phase].append(dict(row,expected=expected))
+    oracle_started=time.monotonic()
+    from .probe_validation import reference_phases
+    phases,input_validation=reference_phases(planner,spec,remaining,automatic=automatic_inputs)
+    if automatic_inputs:
+        # Observations bind the actual retained cohort as well as the proposal.
+        # Never record filtered calls under the unfiltered input fingerprint.
+        workload['shape'].update(proposed_inputs_sha256=digest,inputs_sha256=input_validation['accepted_inputs_sha256'],input_validation=input_validation['semantics'])
     reference_seconds=str(time.monotonic()-oracle_started)
     artifacts=[];rejected=[]
     for package,state,measurement in zip(packages,states,measurements):
@@ -120,13 +140,17 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
             planner.invoke('emit-plan',planner.original,staged,'--core','--target',planner.options.target,'-o',artifact,timeout=remaining())
             package_name='ink-observed-'+measurement[:24]
             if planner.options.target=='rust':artifact=native_project(artifact,planner.directory/(measurement+'.native'),package_name)
-            artifacts.append(dict(measurement=measurement,path=str(artifact),package=package_name,artifact_sha256=artifact_digest(artifact),emission_seconds=str(time.monotonic()-begin)))
+            observed=dict(measurement=measurement,path=str(artifact),package=package_name,artifact_sha256=artifact_digest(artifact),emission_seconds=str(time.monotonic()-begin))
+            if has_refinement(package):
+                observed['reference_phases']=refinement_phases(planner,package,state,staged,phases,remaining())
+            artifacts.append(observed)
         except (ValueError,OSError,subprocess.TimeoutExpired)as error:rejected.append(dict(measurement=measurement,reason=str(error)[-2000:]))
-    if not artifacts or artifacts[0]['measurement']!=measurements[0]:raise ValueError('baseline could not be measured')
+    if not artifacts or artifacts[0]['measurement']!=measurements[0]:raise ValueError('baseline could not be measured: '+json.dumps(rejected)[-4000:])
     native_build=None
     if planner.options.target=='javascript':
         from .value_transfer import transfer
-        request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=transfer(phases),measurement=controls,exact_transfer=True),allow_nan=False))
+        transport=[dict(a,reference_phases=transfer(a['reference_phases']))if 'reference_phases'in a else a for a in artifacts]
+        request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=transport,phases=transfer(phases),measurement=controls,exact_transfer=True),allow_nan=False))
         processes=1 if controls else getattr(planner.options,'measure_processes',3)
         if type(processes) is not int or not 1<=processes<=8:raise ValueError('measurement process count')
         reports=[]
@@ -156,4 +180,4 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         obj=dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=row['measurement'],target=target,workload=phase_workload(workload,row['phase']),metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=None))
         observations.append(store.observe(obj));accepted.add(row['measurement'])
     if measurements[0] not in accepted:raise ValueError('baseline failed measurement validation')
-    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; average whole call and full result consumption; separate setup; no exact peak memory evidence; no runtime probes')
+    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,**({'input_validation':input_validation}if automatic_inputs else {}),scope='Offline selection inputs; average whole call and full result consumption; separate setup; no exact peak memory evidence; no runtime probes')

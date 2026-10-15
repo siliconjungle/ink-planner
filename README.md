@@ -267,7 +267,15 @@ Source-diverse checked candidates undergo interleaved complete-output measuremen
 and independent reference/input checks. Setup enters the lifecycle estimate; a
 comparison-adjusted paired uncertainty guard requires at least 5% improvement.
 Synthetic calls do not describe actual user usage, and some input regimes can
-regress. Unsupported types, stateful lifecycles, targets, memory constraints or
+regress. Original checked source guards validate automatic proposals before
+reference execution. Only a false guard removes a proposal; guard errors, ordinary
+execution failures and timeouts still decline acquisition. Every original phase
+must retain calls, with its original lifecycle weight. Receipts record rejected
+inputs and reference-call reuse across transfer boundaries; observations bind the
+retained cohort hash separately from the proposal hash. This bounded process may
+fail to inhabit an arbitrary precondition and then retains the baseline. Explicit
+workloads and holdouts are never filtered. These source checks grant no rewrite
+authority and do not remove runtime ingress validation. Unsupported types, stateful lifecycles, targets, memory constraints or
 migration retain the baseline unless comparable supplied evidence supports a
 choice. `--measurement-mode off` disables synthetic acquisition;
 `--measure-workload` supplies explicit development calls. No selection packet is
@@ -296,6 +304,9 @@ JavaScript source-state candidates can use explicit schema-2 workloads with
 `--measure-workload` and an independent `--measure-holdout`. The installed
 `producers.maintained_folds` recipe proposes proof-checked maintained maps and
 bounded dense prefixes. Every proposal is replayed before measurement.
+Maintained-only plans also require comparable lifecycle evidence or a validated
+work model. Equal asymptotic write complexity does not authorize selection;
+missing evidence retains the baseline. This includes extrema and grouped views.
 
 ```json
 {

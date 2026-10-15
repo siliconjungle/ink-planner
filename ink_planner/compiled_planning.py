@@ -441,11 +441,12 @@ def main():
             controls=policy() if automatic_probe is not None else None;checked_states=[s for _,s in states.values()]
             indices=shortlist(checked_states,planner.priority,controls['candidates']) if controls else list(range(len(packages)))
             try:
-                target,workload,profile,acquisition=acquire(planner,store,[packages[i]for i in indices],[checked_states[i]for i in indices],[measurements[i]for i in indices],args.measure_workload,controls)
+                target,workload,profile,acquisition=acquire(planner,store,[packages[i]for i in indices],[checked_states[i]for i in indices],[measurements[i]for i in indices],args.measure_workload,controls,automatic_inputs=automatic_probe is not None)
                 acquisition['shortlist']=dict(measured_indices=indices,admitted=len(packages),limit=controls['candidates'] if controls else len(packages),unmeasured_reason='bounded automatic measurement candidate budget')
             except (ValueError,OSError,subprocess.TimeoutExpired)as error:
                 if automatic_probe is None:raise
                 automatic_probe['reason']='offline probes declined: '+str(error)[-2000:]
+                if hasattr(error,'input_validation'):automatic_probe['input_validation']=error.input_validation
         elif all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             profile=json.loads(args.profile.read_bytes());workload=json.loads(args.workload.read_bytes());target=json.loads(args.target_profile.read_bytes())
         if acquisition is not None or all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
@@ -497,14 +498,9 @@ def main():
             chosen,selection=select_by_work(work_model[0],work_model[1],work,measurements,eligible,measurements[0],
                 memory_limit=args.memory_limit,migration_count=args.migration_count)
             selected=packages[measurements.index(chosen)]
-        # Static dominance, the one evidence-free exception: a plan made only of
-        # checked maintained group folds is never asymptotically worse.
-        if selected is baseline and selection.get('reason','').startswith('missing comparable'):
-            from .static_dominance import choose as choose_dominant,REASON
-            index=choose_dominant(packages,[s for _,s in states.values()])
-            if index is not None:
-                selected=packages[index]
-                selection=dict(reason=REASON,selected_measurement=measurements[index],baseline_measurement=measurements[0])
+        # Maintained folds use the same lifecycle evidence/work-model gate as
+        # every other candidate. Asymptotic complexity alone cannot pay for
+        # construction, maintenance, memory or migration on this workload.
         if args.keep_candidates:
             args.keep_candidates.mkdir(parents=True,exist_ok=True)
             for m,package in zip(measurements,packages):(args.keep_candidates/(m+'.plan.json')).write_bytes(canonical(package)+b'\n')

@@ -11,7 +11,15 @@ struct Lane {
 }
 fn same(a:&Value,b:&Value)->bool {
     match (a,b) {
-        (Value::Number(a),Value::Number(b)) => a.as_f64().map(f64::to_bits)==b.as_f64().map(f64::to_bits),
+        (Value::Number(a),Value::Number(b)) => {
+            // Integer outputs must not round through binary64: adjacent U64
+            // values above 2^53 are distinct reference results.
+            if let (Some(a),Some(b))=(a.as_u64(),b.as_u64()){return a==b}
+            if let (Some(a),Some(b))=(a.as_i64(),b.as_i64()){return a==b}
+            if a.as_u64().is_some_and(|n|n>9_007_199_254_740_991)||b.as_u64().is_some_and(|n|n>9_007_199_254_740_991)
+                ||a.as_i64().is_some_and(|n|n< -9_007_199_254_740_991)||b.as_i64().is_some_and(|n|n< -9_007_199_254_740_991){return false}
+            a.as_f64().map(f64::to_bits)==b.as_f64().map(f64::to_bits)
+        },
         (Value::Array(a),Value::Array(b)) => a.len()==b.len() && a.iter().zip(b).all(|(a,b)|same(a,b)),
         (Value::Object(a),Value::Object(b)) => a.len()==b.len() && a.iter().all(|(k,a)|b.get(k).is_some_and(|b|same(a,b))),
         _ => a==b,
@@ -34,12 +42,19 @@ fn invoke(lane:&mut Lane,calls:&[Value],sink:&mut u64)->Result<(),String> {
     }
     Ok(())
 }
-fn validate(lane:&mut Lane,phases:&serde_json::Map<String,Value>)->Result<(),String> {
+fn validate(lane:&mut Lane,phases:&serde_json::Map<String,Value>,request:&Value)->Result<(),String> {
     let before=(lane.snapshot)()?;
-    for calls in phases.values() {
-        for call in calls.as_array().unwrap() {
+    let own=request["artifacts"].as_array().unwrap().iter().find(|a|a["measurement"].as_str()==Some(&lane.measurement)).unwrap();
+    let reference=own.get("reference_phases").map(|v|v.as_object().ok_or("refinement phases")).transpose()?.unwrap_or(phases);
+    if reference.len()!=phases.len(){return Err("refinement changed phase schedule".into())}
+    for (phase,calls) in phases {
+        let expected=reference.get(phase).and_then(Value::as_array).ok_or("refinement phase missing")?;
+        let calls=calls.as_array().unwrap();
+        if expected.len()!=calls.len(){return Err("refinement changed calls".into())}
+        for (call,reference) in calls.iter().zip(expected) {
+            if call["function"]!=reference["function"]||call["args"]!=reference["args"]{return Err("refinement changed arguments".into())}
             let output=(lane.call)(call["function"].as_str().unwrap(),&call["args"])?;
-            if !same(&output,&call["expected"]){return Err("complete output differs from independent reference".into())}
+            if !same(&output,&reference["expected"]){return Err("complete output differs from independent reference".into())}
         }
     }
     if (lane.snapshot)()?!=before{return Err("pure call changed portable snapshot".into())}
@@ -65,7 +80,7 @@ fn run()->Result<(),String> {
     let baseline=artifacts[0]["measurement"].as_str().unwrap();
     let mut rejected=vec![];let mut valid=vec![];
     for mut lane in lanes {
-        match validate(&mut lane,phases) {
+        match validate(&mut lane,phases,&request) {
             Ok(())=>valid.push(lane),
             Err(reason)=>rejected.push(json!({"measurement":lane.measurement,"reason":reason})),
         }
@@ -97,7 +112,7 @@ fn run()->Result<(),String> {
     }
     let mut accepted=std::collections::HashSet::new();
     for lane in &mut valid {
-        match validate(lane,phases) {
+        match validate(lane,phases,&request) {
             Ok(())=>{accepted.insert(lane.measurement.clone());},
             Err(reason)=>rejected.push(json!({"measurement":lane.measurement,"reason":reason})),
         }

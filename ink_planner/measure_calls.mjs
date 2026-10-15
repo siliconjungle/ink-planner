@@ -65,7 +65,11 @@ for(const a of artifacts){
   if(!mod.metadata||typeof mod.call!=='function')throw Error('artifact has no pure-call entries (a state representation module); the pure-call adapter measures pure entries only');
   const module_load_ms=String(performance.now()-started),validation_started=performance.now();
   if(mod.metadata.state!==null&&Object.values(phases).flat().some(c=>!c.boundary))throw Error('pure-call adapter does not measure state lifecycles');
-  const captured=structuredClone(phases),calls=Object.values(captured).flat(),prepared=new Map();
+  const reference=a.reference_phases===undefined?phases:(request.exact_transfer?unpackTransfer(a.reference_phases):a.reference_phases);
+  // Only the oracle outputs may differ. The exact call schedule and arguments
+  // still bind every lane to the same measured workload.
+  assert.deepStrictEqual(Object.fromEntries(Object.entries(reference).map(([p,cs])=>[p,cs.map(({expected,...c})=>c)])),Object.fromEntries(Object.entries(phases).map(([p,cs])=>[p,cs.map(({expected,...c})=>c)])),'refinement changed measurement calls');
+  const captured=structuredClone(reference),calls=Object.values(captured).flat(),prepared=new Map();
   for(const c of calls){
    const f=mod.metadata.functions.find(f=>!f.internal&&f.name===c.function);
    if(!f)throw Error('missing source function');

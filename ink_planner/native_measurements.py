@@ -23,7 +23,7 @@ def _measure(planner,artifacts,phases,controls,deadline):
         return seconds
     cargo=shutil.which('cargo')
     if not cargo:raise ValueError('native offline acquisition requires Cargo')
-    directory=planner.directory/'native-measurements';(directory/'src').mkdir(parents=True)
+    directory=planner.directory/'native-measurements';(directory/'src').mkdir(parents=True,exist_ok=True)
     dependencies=['serde_json={version="=1.0.151",features=["float_roundtrip"]}'];lanes=[]
     for i,artifact in enumerate(artifacts):
         name=f'variant_{i}'
