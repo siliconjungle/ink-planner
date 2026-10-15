@@ -33,6 +33,20 @@ with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-'
     acquisition=receipt['measurement_acquisition']['acquisition']
     assert acquisition['processes']==policy()['processes']==3,acquisition
     assert {row['process']for row in acquisition['rows']}=={0,1,2},acquisition
+    peaks=[row['peak_rss_bytes']for row in acquisition['rows']]
+    assert all(type(peak)is int and peak>0 for peak in peaks),acquisition
+    assert 'whole-host-peak-rss' in receipt['measurement_acquisition']['adapter']
+    from ink_planner.representation_selection import rank
+    observations=[json.loads((store.data/'observations'/(ident+'.json')).read_text())
+                  for ident in receipt['measurement_acquisition']['observations']]
+    first=observations[0];workload=dict(first['workload'],distribution=first['workload']['distribution']['workload'])
+    counts={o['workload']['distribution']['phase']:1 for o in observations}
+    baseline=receipt['measurement_acquisition']['artifacts'][0]['measurement']
+    memory_args=(store,packet['input_core_sha256'],[baseline],first['target'],workload,counts,baseline)
+    try:rank(*memory_args,memory_limit=min(peaks)-1)
+    except ValueError as error:assert 'memory constraint'in str(error),error
+    else:raise AssertionError('native/JavaScript observations must enforce the memory limit')
+    assert rank(*memory_args,memory_limit=max(peaks))[0]==baseline
     assert all(e['processes']==3 for e in receipt['selection']['uncertainty_guard']['estimates'].values())
     guard=receipt['selection']['uncertainty_guard']
     chosen=receipt['selection']['selected_measurement']

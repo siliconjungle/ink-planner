@@ -1,8 +1,42 @@
 """Build a bounded offline adapter against emitted libraries' existing JSON ABI."""
-import fcntl, hashlib, json, os, shutil, subprocess, time
+import fcntl, hashlib, json, os, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 RUNNER=Path(__file__).with_name('measure_calls.rs.txt')
+
+def run_observed(command,*,timeout):
+    """Reap this exact child with its OS peak, without a global child high-water.
+
+    The peak covers the complete host launch, all variants, input/output and
+    adapter storage. It is a conservative common bound, not per-plan allocation.
+    Unknown OS units decline rather than supplying missing or guessed evidence.
+    File-backed output avoids a full pipe blocking the child before wait4.
+    """
+    if not hasattr(os,'wait4')or sys.platform not in ('darwin','linux'):
+        raise ValueError('native peak RSS acquisition requires Darwin or Linux wait4')
+    if timeout<=0:raise subprocess.TimeoutExpired(command,timeout)
+    deadline=time.monotonic()+timeout
+    with tempfile.TemporaryFile()as output,tempfile.TemporaryFile()as errors:
+        child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=output,stderr=errors)
+        try:
+            while True:
+                pid,status,usage=os.wait4(child.pid,os.WNOHANG)
+                if pid:
+                    child.returncode=os.waitstatus_to_exitcode(status)
+                    break
+                remaining=deadline-time.monotonic()
+                if remaining<=0:raise subprocess.TimeoutExpired(command,timeout)
+                time.sleep(min(.02,remaining))
+        finally:
+            if child.returncode is None:
+                try:child.kill()
+                except ProcessLookupError:pass
+                _,status,_=os.wait4(child.pid,0)
+                child.returncode=os.waitstatus_to_exitcode(status)
+        output.seek(0);errors.seek(0)
+        peak=int(usage.ru_maxrss)*(1 if sys.platform=='darwin'else 1024)
+        if peak<=0:raise ValueError('missing or invalid native whole-host peak RSS')
+        return subprocess.CompletedProcess(command,child.returncode,output.read().decode(),errors.read().decode()),peak
 
 def measure(planner,artifacts,phases,controls,deadline=None):
     deadline=deadline or time.monotonic()+planner.options.measure_timeout
@@ -52,10 +86,12 @@ def _measure(planner,artifacts,phases,controls,deadline):
     for process in range(processes):
         payload=json.loads(request.read_text());payload['process_index']=process
         request.write_text(json.dumps(payload,allow_nan=False))
-        result=subprocess.run([str(executable),str(request)],capture_output=True,text=True,timeout=remaining())
+        result,peak=run_observed([str(executable),str(request)],timeout=remaining())
         if result.returncode:raise ValueError('native offline measurement failed: '+result.stderr[-2000:])
-        reports.append(json.loads(result.stdout))
+        report=json.loads(result.stdout)
+        for row in report['rows']:row['peak_rss_bytes']=peak
+        reports.append(report)
     from .process_measurements import combine
     return combine(reports,artifacts),dict(build_seconds=build_seconds,lockfile_sha256=hashlib.sha256((directory/'Cargo.lock').read_bytes()).hexdigest(),
                                         executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
-                                        scope='Exact dependency versions, offline build; existing generated JSON call and portable snapshot ABIs; no new host capability')
+                                        scope='Exact dependency versions, offline build; existing generated JSON call and portable snapshot ABIs; OS wait4 peak RSS for each complete host launch, including all variants and adapter; not per-candidate heap')

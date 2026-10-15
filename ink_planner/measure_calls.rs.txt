@@ -11,7 +11,13 @@ struct Lane {
 }
 fn same(a:&Value,b:&Value)->bool {
     match (a,b) {
-        (Value::Number(a),Value::Number(b)) => a.as_f64().map(f64::to_bits)==b.as_f64().map(f64::to_bits),
+        (Value::Number(a),Value::Number(b)) => match (a.is_f64(),b.is_f64()) {
+            (false,false)=>a==b,
+            (true,true)=>a.as_f64().map(f64::to_bits)==b.as_f64().map(f64::to_bits),
+            // The typed ABI retains integer versus floating JSON numbers.
+            // A lossy conversion must never hide a wrong wide-word result.
+            _=>false,
+        },
         (Value::Array(a),Value::Array(b)) => a.len()==b.len() && a.iter().zip(b).all(|(a,b)|same(a,b)),
         (Value::Object(a),Value::Object(b)) => a.len()==b.len() && a.iter().all(|(k,a)|b.get(k).is_some_and(|b|same(a,b))),
         _ => a==b,
@@ -21,7 +27,7 @@ fn consume(value:&Value)->u64 {
     match value {
         Value::Null=>0,
         Value::Bool(v)=>u64::from(*v),
-        Value::Number(v)=>v.as_f64().unwrap().to_bits(),
+        Value::Number(v)=>v.as_u64().or_else(||v.as_i64().map(|n|n as u64)).unwrap_or_else(||v.as_f64().unwrap().to_bits()),
         Value::String(v)=>v.bytes().fold(0u64,|a,b|a.wrapping_mul(31)^u64::from(b)),
         Value::Array(v)=>v.iter().fold(0u64,|a,b|a.wrapping_mul(31)^consume(b)),
         Value::Object(v)=>v.values().fold(0u64,|a,b|a.wrapping_mul(31)^consume(b)),
@@ -111,3 +117,27 @@ fn run()->Result<(),String> {
     Ok(())
 }
 fn main(){if let Err(error)=run(){eprintln!("{}",error);std::process::exit(1)}}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn wide_integer_results_cannot_compare_through_float_rounding() {
+        for a in [1u64<<53,(1u64<<53)+1,u64::MAX-1] {
+            let left=json!(a);let right=json!(a+1);
+            assert!(!same(&left,&right));
+            assert_ne!(consume(&left),consume(&right));
+            assert!(!same(&json!({"nested":[left]}),&json!({"nested":[right]})));
+        }
+        let left=json!(i64::MIN);let right=json!(i64::MIN+1);
+        assert!(!same(&left,&right));assert_ne!(consume(&left),consume(&right));
+    }
+    #[test]
+    fn float_bits_and_integer_categories_remain_distinct() {
+        assert!(same(&json!(1.25),&json!(1.25)));
+        assert!(!same(&json!(0.0),&json!(-0.0)));
+        assert_ne!(consume(&json!(0.0)),consume(&json!(-0.0)));
+        assert!(!same(&json!(1u64),&json!(1.0)));
+        assert!(same(&json!(u64::MAX),&json!(u64::MAX)));
+    }
+}
