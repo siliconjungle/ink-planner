@@ -498,14 +498,9 @@ def main():
             chosen,selection=select_by_work(work_model[0],work_model[1],work,measurements,eligible,measurements[0],
                 memory_limit=args.memory_limit,migration_count=args.migration_count)
             selected=packages[measurements.index(chosen)]
-        # Static dominance, the one evidence-free exception: a plan made only of
-        # checked maintained group folds is never asymptotically worse.
-        if selected is baseline and selection.get('reason','').startswith('missing comparable'):
-            from .static_dominance import choose as choose_dominant,REASON
-            index=choose_dominant(packages,[s for _,s in states.values()])
-            if index is not None:
-                selected=packages[index]
-                selection=dict(reason=REASON,selected_measurement=measurements[index],baseline_measurement=measurements[0])
+        # Maintained folds use the same lifecycle evidence/work-model gate as
+        # every other candidate. Asymptotic complexity alone cannot pay for
+        # construction, maintenance, memory or migration on this workload.
         if args.keep_candidates:
             args.keep_candidates.mkdir(parents=True,exist_ok=True)
             for m,package in zip(measurements,packages):(args.keep_candidates/(m+'.plan.json')).write_bytes(canonical(package)+b'\n')

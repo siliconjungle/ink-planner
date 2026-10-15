@@ -9,6 +9,27 @@ from .representation_selection import phase_workload
 
 RUNNER=Path(__file__).with_name('measure_calls.mjs')
 
+def has_refinement(package):
+    """Discovery hint only: the compiler rechecks the complete plan below."""
+    if isinstance(package,dict):
+        return package.get('contract_refinement') is not None or any(has_refinement(v) for v in package.values())
+    return isinstance(package,list) and any(has_refinement(v) for v in package)
+
+def refinement_phases(planner,package,state,staged,phases,timeout):
+    """An inexact refinement needs its own independently interpreted oracle.
+
+    Baseline equality would reject valid approximate/loose specifications. Never
+    derive the expected result from emitted code or from candidate metadata.
+    """
+    calls=[dict(function=row['function'],args=row['args'])for rows in phases.values()for row in rows]
+    if not 1<=len(calls)<=512:raise ValueError('refinement reference requires 1..512 calls')
+    request=planner.directory/'refinement-reference-calls.json';request.write_text(json.dumps(calls,allow_nan=False))
+    result=planner.invoke('plan-work',planner.original,staged,request,'--core',timeout=timeout)
+    if not isinstance(result,dict) or result.get('status')!='checked' or result.get('semantics')!='ink-reference-work-v1' or result.get('input')!=package['input_core_sha256'] or result.get('plan_sha256')!=identity(package) or result.get('selected')!=state.get('source') or len(result.get('values',[]))!=len(calls):
+        raise ValueError('refinement reference binding mismatch')
+    values=iter(result['values'])
+    return {phase:[dict(row,expected=next(values))for row in rows]for phase,rows in phases.items()}
+
 def validated(measurements,acquisition):
     """Historical costs cannot resurrect a freshly rejected implementation."""
     accepted=set(acquisition['validated_measurements'])
@@ -78,7 +99,7 @@ def artifact_digest(path):
 
 def native_project(source,directory,package):
     """Wrap literal emitted Rust without changing any generated source bytes."""
-    (directory/'src').mkdir(parents=True)
+    (directory/'src').mkdir(parents=True,exist_ok=True)
     shutil.copyfile(source,directory/'src/lib.rs')
     (directory/'Cargo.toml').write_text('[package]\nname='+json.dumps(package)+'\nversion="0.1.0"\nedition="2021"\n[lib]\ncrate-type=["rlib"]\n[workspace]\n[dependencies]\nnum-bigint="=0.4.8"\nsha2="=0.10.9"\nserde_json={version="=1.0.151",features=["float_roundtrip"]}\n')
     return directory
@@ -119,13 +140,17 @@ def acquire(planner,store,packages,states,measurements,path,controls=None,*,auto
             planner.invoke('emit-plan',planner.original,staged,'--core','--target',planner.options.target,'-o',artifact,timeout=remaining())
             package_name='ink-observed-'+measurement[:24]
             if planner.options.target=='rust':artifact=native_project(artifact,planner.directory/(measurement+'.native'),package_name)
-            artifacts.append(dict(measurement=measurement,path=str(artifact),package=package_name,artifact_sha256=artifact_digest(artifact),emission_seconds=str(time.monotonic()-begin)))
+            observed=dict(measurement=measurement,path=str(artifact),package=package_name,artifact_sha256=artifact_digest(artifact),emission_seconds=str(time.monotonic()-begin))
+            if has_refinement(package):
+                observed['reference_phases']=refinement_phases(planner,package,state,staged,phases,remaining())
+            artifacts.append(observed)
         except (ValueError,OSError,subprocess.TimeoutExpired)as error:rejected.append(dict(measurement=measurement,reason=str(error)[-2000:]))
-    if not artifacts or artifacts[0]['measurement']!=measurements[0]:raise ValueError('baseline could not be measured')
+    if not artifacts or artifacts[0]['measurement']!=measurements[0]:raise ValueError('baseline could not be measured: '+json.dumps(rejected)[-4000:])
     native_build=None
     if planner.options.target=='javascript':
         from .value_transfer import transfer
-        request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=artifacts,phases=transfer(phases),measurement=controls,exact_transfer=True),allow_nan=False))
+        transport=[dict(a,reference_phases=transfer(a['reference_phases']))if 'reference_phases'in a else a for a in artifacts]
+        request=planner.directory/'measure-calls.json';request.write_text(json.dumps(dict(artifacts=transport,phases=transfer(phases),measurement=controls,exact_transfer=True),allow_nan=False))
         processes=1 if controls else getattr(planner.options,'measure_processes',3)
         if type(processes) is not int or not 1<=processes<=8:raise ValueError('measurement process count')
         reports=[]

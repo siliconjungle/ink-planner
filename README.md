@@ -304,6 +304,9 @@ JavaScript source-state candidates can use explicit schema-2 workloads with
 `--measure-workload` and an independent `--measure-holdout`. The installed
 `producers.maintained_folds` recipe proposes proof-checked maintained maps and
 bounded dense prefixes. Every proposal is replayed before measurement.
+Maintained-only plans also require comparable lifecycle evidence or a validated
+work model. Equal asymptotic write complexity does not authorize selection;
+missing evidence retains the baseline. This includes extrema and grouped views.
 
 ```json
 {
