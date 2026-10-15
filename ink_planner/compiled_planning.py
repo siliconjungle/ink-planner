@@ -441,11 +441,12 @@ def main():
             controls=policy() if automatic_probe is not None else None;checked_states=[s for _,s in states.values()]
             indices=shortlist(checked_states,planner.priority,controls['candidates']) if controls else list(range(len(packages)))
             try:
-                target,workload,profile,acquisition=acquire(planner,store,[packages[i]for i in indices],[checked_states[i]for i in indices],[measurements[i]for i in indices],args.measure_workload,controls)
+                target,workload,profile,acquisition=acquire(planner,store,[packages[i]for i in indices],[checked_states[i]for i in indices],[measurements[i]for i in indices],args.measure_workload,controls,automatic_inputs=automatic_probe is not None)
                 acquisition['shortlist']=dict(measured_indices=indices,admitted=len(packages),limit=controls['candidates'] if controls else len(packages),unmeasured_reason='bounded automatic measurement candidate budget')
             except (ValueError,OSError,subprocess.TimeoutExpired)as error:
                 if automatic_probe is None:raise
                 automatic_probe['reason']='offline probes declined: '+str(error)[-2000:]
+                if hasattr(error,'input_validation'):automatic_probe['input_validation']=error.input_validation
         elif all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):
             profile=json.loads(args.profile.read_bytes());workload=json.loads(args.workload.read_bytes());target=json.loads(args.target_profile.read_bytes())
         if acquisition is not None or all(getattr(args,n)is not None for n in ['profile','workload','target_profile']):

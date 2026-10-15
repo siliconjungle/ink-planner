@@ -83,7 +83,7 @@ def native_project(source,directory,package):
     (directory/'Cargo.toml').write_text('[package]\nname='+json.dumps(package)+'\nversion="0.1.0"\nedition="2021"\n[lib]\ncrate-type=["rlib"]\n[workspace]\n[dependencies]\nnum-bigint="=0.4.8"\nsha2="=0.10.9"\nserde_json={version="=1.0.151",features=["float_roundtrip"]}\n')
     return directory
 
-def acquire(planner,store,packages,states,measurements,path,controls=None):
+def acquire(planner,store,packages,states,measurements,path,controls=None,*,automatic_inputs=False):
     acquisition_started=time.monotonic();deadline=acquisition_started+planner.options.measure_timeout
     def remaining():
         seconds=deadline-time.monotonic()
@@ -91,6 +91,7 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         return min(seconds,planner.options.check_timeout)
     spec,digest=read_workload(path)
     if spec['schema']==2:
+        if automatic_inputs:raise ValueError('automatic pure probes do not author state workloads')
         from .state_measurements import acquire as acquire_state
         return acquire_state(planner,store,packages,states,measurements,path,controls)
     if spec['schema']==3 and planner.options.target!='javascript':raise ValueError('encoded lifecycle adapter requires JavaScript')
@@ -100,15 +101,13 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
     workload['shape']=dict(inputs_sha256=digest,declared=workload['shape'])
     if workload['concurrency']!=1:raise ValueError('serial call adapter requires concurrency=1')
     Store.validate_observation(dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=measurements[0],target=target,workload=workload,metrics=dict(complete_call_ns=['0'],peak_bytes=None)))
-    phases={};oracle_started=time.monotonic()
-    # Reference execution is independently implemented and outside timing.
-    for phase,rows in spec['phases'].items():
-        phases[phase]=[]
-        for i,row in enumerate(rows):
-            args=planner.directory/'reference-args.json';args.write_text(json.dumps(row['args'],allow_nan=False))
-            expected=planner.invoke('run',planner.original,row['function'],args,'--core',timeout=remaining())
-            if isinstance(expected,str):expected=json.loads(expected)
-            phases[phase].append(dict(row,expected=expected))
+    oracle_started=time.monotonic()
+    from .probe_validation import reference_phases
+    phases,input_validation=reference_phases(planner,spec,remaining,automatic=automatic_inputs)
+    if automatic_inputs:
+        # Observations bind the actual retained cohort as well as the proposal.
+        # Never record filtered calls under the unfiltered input fingerprint.
+        workload['shape'].update(proposed_inputs_sha256=digest,inputs_sha256=input_validation['accepted_inputs_sha256'],input_validation=input_validation['semantics'])
     reference_seconds=str(time.monotonic()-oracle_started)
     artifacts=[];rejected=[]
     for package,state,measurement in zip(packages,states,measurements):
@@ -156,4 +155,4 @@ def acquire(planner,store,packages,states,measurements,path,controls=None):
         obj=dict(schema=1,program=packages[0]['input_core_sha256'],entries=[],plan=row['measurement'],target=target,workload=phase_workload(workload,row['phase']),metrics=dict(complete_call_ns=row['complete_call_ns'],peak_bytes=None))
         observations.append(store.observe(obj));accepted.add(row['measurement'])
     if measurements[0] not in accepted:raise ValueError('baseline failed measurement validation')
-    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,scope='Offline selection inputs; average whole call and full result consumption; separate setup; no exact peak memory evidence; no runtime probes')
+    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,**({'input_validation':input_validation}if automatic_inputs else {}),scope='Offline selection inputs; average whole call and full result consumption; separate setup; no exact peak memory evidence; no runtime probes')
