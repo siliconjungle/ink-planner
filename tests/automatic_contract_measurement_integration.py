@@ -4,6 +4,7 @@ Timing observations validate acquisition only, not a compiler speed claim.
 import copy,hashlib,json,subprocess,sys,tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from ink_knowledge import Store
 from ink_knowledge.selection_probes import create,policy
 from ink_knowledge.implementation_candidates import publish_candidates
@@ -34,6 +35,17 @@ pub fn ordinary(x:u32)->u32{return x+1;}
  for target in ['javascript','rust']:
   planner=Actual();planner.options=SimpleNamespace(target=target,measure_processes=1,measure_timeout=120,check_timeout=30,memory_bytes=512000000)
   spec,authored=create(core,target);assert set(c['function']for rows in spec['phases'].values()for c in rows)=={'positive','square_domain','ordinary'}
+  # Strict default size strata cannot inhabit the empty square's positive-width
+  # precondition. Keep that rejection; never merge domains to manufacture gain.
+  try:reference_phases(planner,spec,lambda:30,automatic=True)
+  except ProbeInputError as error:
+   default_declined=error.input_validation
+   assert not default_declined['complete']and any(not v['accepted']for v in default_declined['phases'].values())
+  else:raise AssertionError('an uninhabited required default size stratum disappeared')
+  # Separately exercise source filtering and both adapters with an explicitly
+  # authored coarse test policy. This is not evidence about default selection.
+  controls=policy();controls['phase_budget']=len({s['original_phase']for s in authored['size_strata'].values()})
+  with patch('ink_knowledge.selection_probes.policy',return_value=controls):spec,coarse_authored=create(core,target)
   phases,validated=reference_phases(planner,spec,lambda:30,automatic=True)
   assert validated['complete']and validated['rejected']and all(rows for rows in phases.values()),validated
   assert all(row['args'][0]>0 for rows in phases.values()for row in rows if row['function']=='positive')
@@ -42,20 +54,20 @@ pub fn ordinary(x:u32)->u32{return x+1;}
   package=dict(schema=1,semantics='ink-compiled-plan-v1',input_core_sha256=source_id,steps=[])
   store,candidates=publish_candidates(root/('knowledge-'+target),[package]);planner.root=store.root;measurement=measurement_id(candidates[0],planner.compiler_hash,target)
   path=root/('workload-'+target+'.json');path.write_text(json.dumps(spec))
-  try:acquire(planner,store,[package],[{}],[measurement],path,policy())
+  try:acquire(planner,store,[package],[{}],[measurement],path,controls)
   except ValueError as error:assert 'precondition failed'in str(error),error
   else:raise AssertionError('supplied workload errors must remain strict')
-  _,workload,profile,receipt=acquire(planner,store,[package],[{}],[measurement],path,policy(),automatic_inputs=True)
+  _,workload,profile,receipt=acquire(planner,store,[package],[{}],[measurement],path,controls,automatic_inputs=True)
   assert profile==spec['profile']and receipt['validated_measurements']==[measurement]
   assert receipt['input_validation']['accepted_inputs_sha256']==validated['accepted_inputs_sha256']
   assert workload['shape']['inputs_sha256']==validated['accepted_inputs_sha256']
   assert workload['shape']['inputs_sha256']!=workload['shape']['proposed_inputs_sha256']
   bad=copy.deepcopy(spec);phase=next(p for p,rows in bad['phases'].items()if rows[0]['function']=='positive');bad['phases'][phase]=[dict(bad['phases'][phase][0],args=[0])];path.write_text(json.dumps(bad));before=Store(store.root).publication_id
-  try:acquire(planner,store,[package],[{}],[measurement],path,policy(),automatic_inputs=True)
+  try:acquire(planner,store,[package],[{}],[measurement],path,controls,automatic_inputs=True)
   except ProbeInputError as error:assert error.input_validation['phases'][phase]['accepted']==0
   else:raise AssertionError('empty required phase was silently dropped')
   assert Store(store.root).publication_id==before,'failed acquisition published observations'
-  reports.append(dict(target=target,authored=authored,validation=receipt['input_validation'],observations=len(receipt['observations']),validated_measurements=receipt['validated_measurements'],explicit_errors_preserved=True,empty_phase_declined_without_publication=True))
+  reports.append(dict(target=target,authored=authored,default_uninhabited_stratum_declined=default_declined,coarse_test_policy=coarse_authored,validation=receipt['input_validation'],observations=len(receipt['observations']),validated_measurements=receipt['validated_measurements'],explicit_errors_preserved=True,empty_phase_declined_without_publication=True))
  # Even an apparently true guard in transport cannot replace checked source.
  bad=copy.deepcopy(core);guard=bad['program']['contracts']['precondition_checks']['positive']
  next(f for f in bad['program']['functions']if f['name']==guard)['body']={'Bool':True};original.write_text(json.dumps(bad))
