@@ -109,7 +109,29 @@ with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-'
         assert all(json.loads(path.read_text())['workload']['shape']['inputs_sha256']!=invalid_digest
                    for path in (store.data/'observations').glob('*.json'))
         print('native independent holdout completed; rounded-float alias rejected before held-out cost publication')
+    context_evidence=None
     if target=='javascript':
+        original_key=warm['cache']['key']
+        changed_environment=dict(environment,NODE_OPTIONS=(environment.get('NODE_OPTIONS','')+' --jitless').strip())
+        changed_result=subprocess.run(command,env=changed_environment,text=True,capture_output=True)
+        assert changed_result.returncode==0,changed_result.stderr
+        changed=json.loads(Path(str(plan)+'.receipt.json').read_text())
+        assert not changed.get('cache',{}).get('hit',False),changed
+        assert changed['measurement_acquisition'],changed
+        changed_result=subprocess.run(command,env=changed_environment,text=True,capture_output=True)
+        assert changed_result.returncode==0,changed_result.stderr
+        changed_warm=json.loads(Path(str(plan)+'.receipt.json').read_text())
+        assert changed_warm['cache']['hit'] and changed_warm['cache']['key']!=original_key,changed_warm
+        subprocess.run([str(compiler),'check-plan',str(source),str(plan),'--target',target],check=True,capture_output=True)
+        restored_result=subprocess.run(command,env=environment,text=True,capture_output=True)
+        assert restored_result.returncode==0,restored_result.stderr
+        restored=json.loads(Path(str(plan)+'.receipt.json').read_text())
+        assert restored['cache']['hit'] and restored['cache']['key']==original_key,restored
+        context_evidence=dict(normal_cache_key=original_key,jitless_cache_key=changed_warm['cache']['key'],
+            jitless_first_hit=False,jitless_second_hit=True,restored_normal_hit=True,
+            normal_context=receipt['measurement_acquisition']['execution_context'],
+            jitless_context=changed['measurement_acquisition']['execution_context'],
+            proof_replay=True)
         assert warm['diagnostics']['fresh_work']==dict(search=False,measurements=False,selected_replay_reported=True)
         # Keep the source/key bindings but corrupt the proof-bearing packet.
         # Cache membership must not turn malformed proof data into authority.
@@ -131,5 +153,10 @@ with tempfile.TemporaryDirectory(prefix='ink-automatic-measurement-integration-'
         cases_file=root/'held-out.json';cases_file.write_text(json.dumps(cases));driver=root/'check.mjs'
         driver.write_text("import fs from 'node:fs';import assert from 'node:assert/strict';const m=await import(process.argv[2]);for(const c of JSON.parse(fs.readFileSync(process.argv[3]))){const before=structuredClone(c.args);assert.deepStrictEqual(m.call('run',c.args),c.expected);assert.deepStrictEqual(c.args,before);}console.log('24 independent boundary inputs passed');")
         subprocess.run(['node',str(driver),output.as_uri(),str(cases_file)],check=True)
+    if len(sys.argv)>3:
+        evidence=Path(sys.argv[3]);evidence.parent.mkdir(parents=True,exist_ok=True)
+        evidence.write_text(json.dumps(dict(schema=1,target=target,context_transition=context_evidence,
+            held_out_calls=24 if target=='javascript'else 0,corrupt_proof_recovered=target=='javascript',
+            compiler_sha256=__import__('hashlib').sha256(compiler.read_bytes()).hexdigest()),indent=2)+'\n')
     print(target,'automatic typed probes acquired; complete source chain replayed; warm cache freshly replayed',
           'selected steps',len(packet['steps']))

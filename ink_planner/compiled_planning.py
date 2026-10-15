@@ -455,7 +455,8 @@ def main():
         initial=dict(schema=1,semantics=SEMANTICS,input_core_sha256=source,steps=[])
         planner=Planner(compiler,original,root,directory,registry['recipes'],digest,args)
         from . import compiled_cache
-        cache_key=compiled_cache.key(planner,source,store.snapshot_id,args,usage_profiles)
+        cache_execution=compiled_cache.execution_binding(planner,args)
+        cache_key=compiled_cache.key(planner,source,store.snapshot_id,args,usage_profiles,execution=cache_execution)
         cached=compiled_cache.load(root,cache_key)if args.cache=='auto'and not args.measure_workload else None
         if cached is not None:
             try:
@@ -464,6 +465,7 @@ def main():
                 replay=directory/'cached-plan.json';replay.write_bytes(canonical(packet)+b'\n')
                 planner.invoke('check-plan',original,replay,'--core','--target',args.target)
                 if code_fingerprint()!=planner.code_hash or hashlib.sha256(compiler.read_bytes()).hexdigest()!=planner.compiler_hash:raise ValueError('execution machinery changed during cached replay')
+                if compiled_cache.execution_binding(planner,args)!=cache_execution:raise ValueError('execution context changed during cached replay')
                 if args.emit:planner.invoke('emit-plan',original,replay,'--core','--target',args.target,'-o',args.emit)
                 args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(packet)+b'\n')
                 receipt=dict(cached['receipt'],cache=dict(hit=True,key=cache_key,origin_created_unix=cached['created_unix'],scope='Historical search/cost diagnostics reused; only selected full chain freshly replayed'))
@@ -584,6 +586,7 @@ def main():
         planner.invoke('check-plan',original,replay,'--core','--target',args.target)
         if hashlib.sha256(compiler.read_bytes()).hexdigest()!=planner.compiler_hash or code_fingerprint()!=planner.code_hash:raise ValueError('compiler or planning knowledge changed during planning')
         if load(args.registry,Store(root,root/'store/snapshots'/f'{planner.snapshot}.json'))[1]!=digest:raise ValueError('recipe registry changed during planning')
+        if compiled_cache.execution_binding(planner,args)!=cache_execution:raise ValueError('execution context changed during planning')
         args.o.parent.mkdir(parents=True,exist_ok=True);args.o.write_bytes(canonical(selected)+b'\n')
         receipt.update(dict(schema=1,semantics=SEMANTICS,status='checked',source=source,compiler_sha256=planner.compiler_hash,
             registry_sha256=digest,producer_sha256=planner.code_hash,planning_budgets=dict(effort=args.planning_effort,recipe_workers=args.recipe_workers,**{name:getattr(args,name)for name in EFFORTS['balanced']}),reused_proof_steps=planner.reused_steps,recipe_cache_hits=planner.recipe_cache_hits,source_snapshot=planner.snapshot,publication_snapshot=store.snapshot_id,coverage=indexed_coverage(Store(root,root/'store/snapshots'/f'{planner.snapshot}.json')),recipes=planner.notes,
@@ -603,7 +606,7 @@ def main():
             # Ordinary publication appends source-bound candidates. The exact
             # output snapshot is a second valid key, never an arbitrary latest.
             args.measure_workload=None if automatic_probe is not None else args.measure_workload
-            next_key=compiled_cache.key(planner,source,Store(root).snapshot_id,args,usage_profiles)
+            next_key=compiled_cache.key(planner,source,Store(root).snapshot_id,args,usage_profiles,execution=cache_execution)
             compiled_cache.save(root,next_key,selected,receipt)
         print(json.dumps({k:v for k,v in receipt.items()if k not in {'edges','rejected','recipes','candidates','coverage','diagnostics'}}))
 

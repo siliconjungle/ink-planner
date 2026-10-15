@@ -181,6 +181,31 @@ class SearchProofAlternatives(unittest.TestCase):
 
 
 class BinderSafeRebuilding(unittest.TestCase):
+    def test_extract_preserves_local_lambdas_and_shifts_only_outer_captures(self):
+        import copy
+        from ink_planner.semantic_search import extract_hole, match, substitute
+        x=variable('x');bound=lambda i:dict(sort=x['sort'],node={'Bound':i})
+        arrow={'Arrow':[x['sort'],x['sort']]}
+        lam=lambda body:dict(sort=arrow,node={'Lambda':body})
+        closed=lam(bound(0))
+        self.assertEqual(extract_hole(closed,1),closed)
+        body=dict(sort=x['sort'],node={'Op':['call:pair',[bound(0),bound(2)]]})
+        nested=lam(body);saved=copy.deepcopy(nested)
+        extracted=extract_hole(nested,1)
+        self.assertEqual([a['node']['Bound'] for a in extracted['node']['Lambda']['node']['Op'][1]],[0,1])
+        self.assertEqual(nested,saved)
+        hole=dict(sort=arrow,node={'Free':'f'})
+        pattern=dict(sort={'Arrow':[x['sort'],arrow]},node={'Lambda':hole})
+        actual=dict(sort=pattern['sort'],node={'Lambda':nested})
+        bindings={}
+        self.assertTrue(match(pattern,actual,{'f':arrow},bindings))
+        self.assertEqual(substitute(pattern,bindings),actual)
+        for forbidden in [bound(0),lam(bound(1)),lam(lam(bound(2)))]:
+            with self.assertRaises(ValueError):extract_hole(forbidden,1)
+        # More than one pattern binder, including deeply nested local identity.
+        self.assertEqual(extract_hole(lam(lam(bound(0))),3),lam(lam(bound(0))))
+        with self.assertRaises(ValueError):extract_hole(lam(bound(2)),2)
+
     def test_shift_and_substitution_preserve_nested_binders_and_input(self):
         import copy
         from ink_planner.semantic_search import shift, substitute, extract_hole

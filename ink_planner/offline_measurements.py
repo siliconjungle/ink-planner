@@ -3,6 +3,7 @@ JavaScript trusted calls and native Rust JSON calls have distinct boundaries.
 Other execution ABIs decline explicitly; observations never substitute for proof.
 """
 import hashlib,json,platform,re,shutil,subprocess,tempfile,time
+from .measurement_context import execution_context,digest as context_digest,node_command
 from pathlib import Path
 from ink_knowledge import canonical,identity,Store
 from .representation_selection import phase_workload
@@ -74,11 +75,10 @@ def independent_workloads(training,holdout):
                 for rows in spec['phases'].values()for row in rows}
     if calls(first)&calls(second):raise ValueError('holdout inputs overlap selection inputs')
 
-def target_context(planner,state=False,encoded=False):
+def target_context(planner,state=False,encoded=False,*,execution=None):
+    execution=execution if execution is not None else execution_context(planner.options,state=state)
     if planner.options.target=='javascript':
-        executable=shutil.which('node')
-        if not executable:raise ValueError('offline measurement requires Node.js')
-        version=subprocess.check_output([executable,'--version'],text=True).strip();runner=RUNNER
+        runner=RUNNER
         bridge='trusted-values-v3;mean-complete-call;full-bit-aware-output-consumption'
         if encoded:bridge='schema-framed-owned-result-v1;whole-call-and-complete-byte-consumption'
         bridge+=';whole-host-peak-rss'
@@ -87,12 +87,9 @@ def target_context(planner,state=False,encoded=False):
             bridge='typed-bound-full-observation-v1;independent-state-history;portable-lifecycle;whole-host-peak-rss'
     elif planner.options.target=='rust':
         from .native_measurements import RUNNER as runner
-        executable=shutil.which('rustc')
-        if not executable:raise ValueError('offline measurement requires Rust')
-        version=subprocess.check_output([executable,'--version'],text=True).strip()
         bridge='generated-json-call-v3;reference-typed-inputs-v1;sealed-request-v1;mean-complete-call;full-bit-aware-output-consumption;whole-host-peak-rss-wait4-v1'
     else:raise ValueError('no installed offline measurement adapter for '+planner.options.target)
-    return dict(hardware=platform.machine()+':'+platform.processor()+':'+platform.node(),driver=platform.system()+':'+platform.release(),toolchain='compiler:'+planner.compiler_hash+';host:'+version+';adapter:'+hashlib.sha256(runner.read_bytes()).hexdigest(),backend=planner.options.target,bridge=bridge)
+    return dict(hardware=platform.machine()+':'+platform.processor()+':'+platform.node(),driver=platform.system()+':'+platform.release(),toolchain='compiler:'+planner.compiler_hash+';execution-v1:'+context_digest(execution)+';adapter:'+hashlib.sha256(runner.read_bytes()).hexdigest(),backend=planner.options.target,bridge=bridge)
 
 def artifact_digest(path):
     if path.is_file():return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -132,7 +129,8 @@ def acquire(planner,store,packages,states,measurements,path,controls=None,*,disj
         if forbidden&fingerprints(spec):raise ValueError('holdout state histories overlap selection histories')
         return acquire_state(planner,store,packages,states,measurements,path,controls)
     if spec['schema']==3 and planner.options.target!='javascript':raise ValueError('encoded lifecycle adapter requires JavaScript')
-    target=target_context(planner,encoded=spec['schema']==3);controls=controls or {}
+    execution=execution_context(planner.options)
+    target=target_context(planner,encoded=spec['schema']==3,execution=execution);controls=controls or {}
     workload=dict(spec['workload'])
     if set(workload)!={'shape','distribution','concurrency','residency'}:raise ValueError('measurement workload provenance fields')
     workload['shape']=dict(inputs_sha256=digest,declared=workload['shape'])
@@ -184,7 +182,7 @@ def acquire(planner,store,packages,states,measurements,path,controls=None,*,disj
         for process in range(processes):
             payload=json.loads(request.read_text());payload['process_index']=process
             request.write_text(json.dumps(payload,allow_nan=False))
-            result=subprocess.run([shutil.which('node'),'--max-old-space-size='+str(max(32,min(4096,getattr(planner.options,'memory_bytes',512000000)//1000000))),str(RUNNER),str(request)],capture_output=True,text=True,timeout=remaining())
+            result=subprocess.run(node_command(planner.options,RUNNER,request),capture_output=True,text=True,timeout=remaining())
             if result.returncode:raise ValueError('offline measurement failed: '+result.stderr[-2000:])
             reports.append(json.loads(result.stdout))
         from .process_measurements import combine
@@ -210,4 +208,4 @@ def acquire(planner,store,packages,states,measurements,path,controls=None,*,disj
         observations.append(store.observe(obj));accepted.add(row['measurement'])
     if measurements[0] not in accepted:raise ValueError('baseline failed measurement validation')
     memory_scope='conservative whole-process peak RSS including all candidates and adapter; not per-candidate heap'
-    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],workload_sha256=digest,reference_seconds=reference_seconds,reference_budget=reference_budget,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,**({'input_validation':input_validation}if automatic_inputs else {}),scope='Offline selection inputs; average whole call and full result consumption; separate setup; '+memory_scope+'; no runtime probes')
+    return target,workload,spec['profile'],dict(schema=1,adapter=target['bridge'],execution_context=execution,workload_sha256=digest,reference_seconds=reference_seconds,reference_budget=reference_budget,acquisition_seconds=str(time.monotonic()-acquisition_started),observations=observations,validated_measurements=sorted(accepted),artifacts=artifacts,native_build=native_build,rejected=rejected+report['rejected'],acquisition=report,**({'input_validation':input_validation}if automatic_inputs else {}),scope='Offline selection inputs; average whole call and full result consumption; separate setup; '+memory_scope+'; no runtime probes')

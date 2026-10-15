@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +65,33 @@ class WorkModelCLI(unittest.TestCase):
             self.assertEqual(cached, selected)
             self.assertTrue(receipt['cache']['hit'])
             self.assertEqual(explore_mock.call_count, searches)
+
+            # A context change after the initial lookup must not publish the
+            # historical choice or re-key its old costs under a new context.
+            from types import SimpleNamespace
+            from ink_planner.compiled_cache import execution_binding
+            binding = execution_binding(planner, SimpleNamespace(target='javascript', memory_bytes=512000000))
+            with patch('ink_planner.compiled_cache.execution_binding',
+                       side_effect=[binding, dict(binding, changed=True), dict(binding, changed=True)]):
+                with self.assertRaisesRegex(ValueError, 'execution context changed during planning'):
+                    run(opted_in)
+            self.assertTrue(any(n.get('reason')=='execution context changed during cached replay' for n in planner.notes))
+
+            # Publication happens after emission. Changing settings there must
+            # not stamp the old measured choice under a freshly computed key.
+            with patch.dict(os.environ):
+                os.environ.pop('NODE_OPTIONS', None)
+                def emitted(*args, **kwargs):
+                    os.environ['NODE_OPTIONS'] = '--jitless'
+                    return SimpleNamespace(returncode=0, stderr='')
+                extra = opted_in + ['--budget', '17', '--emit', str(root/'selected.mjs')]
+                with patch.object(compiled_planning.subprocess, 'run', side_effect=emitted):
+                    _, first_publication = run(extra)
+                    self.assertNotIn('cache', first_publication)
+                    _, changed_host = run(extra)
+                    self.assertNotIn('cache', changed_host)
+                    _, changed_warm = run(extra)
+                    self.assertTrue(changed_warm['cache']['hit'])
 
             model_value['min_gain'] = 1000
             model.write_text(json.dumps(model_value))
