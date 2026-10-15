@@ -146,7 +146,7 @@ class MeasurementContext(unittest.TestCase):
                 with patch.object(store, 'observe', wraps=store.observe) as observed:
                     with self.assertRaisesRegex(ValueError, 'machinery changed'):
                         acquire(planner, store, [dict(input_core_sha256='a'*64)], [{}], ['b'*64], workload,
-                                dict(warmup=1, samples=1, iterations=1))
+                                dict(warmup=1, samples=1, iterations=1, processes=1))
                     observed.assert_not_called()
 
 
