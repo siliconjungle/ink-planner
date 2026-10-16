@@ -26,8 +26,14 @@ class CollectionAccessCostTests(unittest.TestCase):
         counted=lambda xs:op(value('U64'),'call:count',xs)
         self.assertGreater(cost(self.head(mapped,self.z)),cost(self.head(self.xs,self.z)))
         self.assertGreater(cost(counted(mapped)),cost(counted(self.xs)))
-        # Skipping a projection becomes valuable through its receiver cost.
-        self.assertEqual(cost(counted(mapped))-cost(counted(self.xs)),40+cost(lam(self.s,bound(self.s,0))))
+        # Charge the complete receiver, including the authored callback model.
+        # The catalogue's default iteration hypothesis can change independently.
+        for iterations in [1,7]:
+            prices={'method:map':13,'estimate:loop_iterations':iterations,
+                    'estimate:callback_carrier:List':1,'estimate:list_cardinality':0}
+            score=lambda term:cost(term,prices)
+            self.assertEqual(score(counted(mapped))-score(counted(self.xs)),
+                             13+iterations*score(lam(self.s,bound(self.s,0))))
 
 
 if __name__=='__main__':unittest.main()
