@@ -1,8 +1,8 @@
 """Bounded untrusted selected-plan cache. Every hit requires fresh whole replay."""
-import hashlib,json,os,subprocess,tempfile,time
+import hashlib,json,subprocess,time
 from pathlib import Path
 from ink_knowledge import identity
-from .plan_cache import prune
+from .plan_cache import write_hint
 from .measurement_context import configuration
 
 LIMIT=16000000
@@ -47,12 +47,18 @@ def load(root,key):
     except (OSError,ValueError,KeyError,TypeError,RecursionError):return None
 
 def save(root,key,package,receipt):
+    """Return True when stored, False on optional I/O failure, None if skipped.
+
+    This is a disposable hint, written only after authoritative plan publication.
+    Storage failure must not turn that checked output into a failed compilation.
+    Serialization/programming errors still propagate rather than hiding bugs.
+    """
     # A deadline leaves candidate applicability unknown. Do not turn a transient
     # missed check into a cached baseline that suppresses subsequent exploration.
     if receipt.get('unchecked_checks',0):return
     goal=receipt.get('search_goal')
     if goal is not None and(not isinstance(goal,dict)or goal.get('failures',0)or goal.get('disabled',False)):return
-    directory=Path(root)/'compiled-cache';directory.mkdir(exist_ok=True)
+    directory=Path(root)/'compiled-cache'
     # Cached alternatives remain historical diagnostics. Only the selected
     # packet is replayed on a hit, never reported as newly searched/admitted.
     compact={k:v for k,v in receipt.items()if k not in ['edges','rejected','recipes','candidates']}
@@ -61,10 +67,4 @@ def save(root,key,package,receipt):
     # stricter integer-only canonical encoding. Cache packets are replayed.
     raw=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()+b'\n'
     if len(raw)>LIMIT:return
-    fd,tmp=tempfile.mkstemp(prefix='.ink-cache-',dir=directory)
-    try:
-        with os.fdopen(fd,'wb')as f:f.write(raw)
-        os.replace(tmp,directory/f'{key}.json')
-    finally:
-        if Path(tmp).exists():Path(tmp).unlink()
-    prune(directory,128)
+    return write_hint(directory,key,raw,128)

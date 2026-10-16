@@ -650,12 +650,14 @@ def main():
             result=subprocess.run(command,capture_output=True,text=True,timeout=args.check_timeout)
             if result.returncode:raise ValueError(result.stderr)
         if args.cache=='auto':
-            compiled_cache.save(root,cache_key,selected,receipt)
+            first_cache=compiled_cache.save(root,cache_key,selected,receipt)
             # Ordinary publication appends source-bound candidates. The exact
             # output snapshot is a second valid key, never an arbitrary latest.
             args.measure_workload=None if automatic_probe is not None else args.measure_workload
             next_key=compiled_cache.key(planner,source,Store(root).snapshot_id,args,usage_profiles,execution=cache_execution)
-            compiled_cache.save(root,next_key,selected,receipt)
+            next_cache=compiled_cache.save(root,next_key,selected,receipt)
+            if first_cache is False or next_cache is False:
+                print('warning: optional compiled-plan cache maintenance unavailable; checked output retained',file=sys.stderr)
         print(json.dumps({k:v for k,v in receipt.items()if k not in {'edges','rejected','recipes','candidates','coverage','diagnostics'}}))
 
 if __name__=='__main__':main()

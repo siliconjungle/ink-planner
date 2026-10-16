@@ -293,6 +293,13 @@ policy, host, options and supplied evidence. Every hit freshly replays the full
 selected chain and target before emission. Historical search/measurement costs
 are marked separately in diagnostics. `--cache off` requests fresh planning.
 The distribution forwards this as `--planning-cache off`.
+
+Both compiled-plan and semantic-search caches are optional hints. Storage or
+eviction failures warn and retain the already checked, published output.
+Writes replace cache entries atomically and attempt to remove partial temporary
+files on failure. Proof checks, serialization errors and authoritative output
+publication still propagate failures. Cache hits continue to require fresh
+replay; this changes storage handling, not proof or profitability admission.
 Known host flags, heap settings and native build configuration also bind cost
 reuse; see [measurement context](docs/measurement-context.md) for the recorded
 components, frozen publication binding and remaining limits.

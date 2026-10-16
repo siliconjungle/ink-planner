@@ -67,6 +67,21 @@ class WorkModelCLI(unittest.TestCase):
             self.assertTrue(receipt['cache']['hit'])
             self.assertEqual(explore_mock.call_count, searches)
 
+            # The authoritative checked packet/receipt already exist when the
+            # optional hint cache is maintained. Its failure cannot invalidate
+            # publication or swallow a proof-check failure on a later build.
+            diagnostic=io.StringIO()
+            with patch('ink_planner.compiled_cache.save',return_value=False),contextlib.redirect_stderr(diagnostic):
+                published,_=run(opted_in+['--budget','23'])
+            self.assertTrue(published['steps'])
+            self.assertIn('checked output retained',diagnostic.getvalue())
+            prior=output.read_bytes();prior_receipt=Path(str(output)+'.receipt.json').read_bytes()
+            with patch.object(planner,'check',side_effect=ValueError('injected proof rejection')):
+                with self.assertRaisesRegex(ValueError,'injected proof rejection'):
+                    run(opted_in+['--budget','24'])
+            self.assertEqual(output.read_bytes(),prior)
+            self.assertEqual(Path(str(output)+'.receipt.json').read_bytes(),prior_receipt)
+
             # A context change after the initial lookup must not publish the
             # historical choice or re-key its old costs under a new context.
             from types import SimpleNamespace

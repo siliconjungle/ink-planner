@@ -1,15 +1,51 @@
 """Real cache files remain optional under concurrent eviction and malformed data."""
 import json
+import contextlib
+import errno
 import tempfile
 import time
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from ink_planner import compiled_cache
+from ink_planner import compiled_cache,plan_cache
 
 
 class CompiledCacheIO(unittest.TestCase):
+    def test_optional_write_failures_preserve_prior_packet_and_remove_partial_files(self):
+        for client,stage in [(c,s)for c in ['compiled','search']for s in ['mkdir','mkstemp','write','replace','prune']]:
+            with self.subTest(client=client,stage=stage),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);key='a'*64;old={'steps':[]};new={'steps':[],'new':True}
+                cache=root/('compiled-cache'if client=='compiled'else'search-cache')
+                save=lambda value:compiled_cache.save(root,key,value,{})if client=='compiled'else plan_cache.save(cache,key,json.dumps(value).encode())
+                load=lambda:compiled_cache.load(root,key)['package']if client=='compiled'else json.loads(plan_cache.load(cache,key))
+                self.assertTrue(save(old))
+                sentinel=cache/'unrelated.txt';sentinel.write_bytes(b'keep')
+                original=plan_cache.os.fdopen
+                @contextlib.contextmanager
+                def partial_write(fd,*args,**kwargs):
+                    with original(fd,*args,**kwargs) as file:
+                        class Writer:
+                            def write(self,data):
+                                file.write(data[:17]);file.flush()
+                                raise OSError(errno.ENOSPC,'injected full device')
+                        yield Writer()
+                targets={'mkdir':(Path,'mkdir'),'mkstemp':(plan_cache.tempfile,'mkstemp'),
+                    'write':(plan_cache.os,'fdopen'),'replace':(plan_cache.os,'replace'),
+                    'prune':(plan_cache,'prune')}
+                target,name=targets[stage]
+                failure=partial_write if stage=='write' else OSError(errno.EACCES,'injected unavailable cache')
+                with patch.object(target,name,side_effect=failure):
+                    self.assertFalse(save(new))
+                self.assertEqual(load(),new if stage=='prune' else old)
+                self.assertEqual(sentinel.read_bytes(),b'keep')
+                self.assertEqual(list(cache.glob('.ink-*')),[])
+
+    def test_nonstorage_errors_are_not_hidden_as_cache_misses(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(ValueError):
+                compiled_cache.save(temporary,'a'*64,{},dict(invalid=float('nan')))
+
     def test_concurrent_eviction_during_inventory_preserves_published_packet(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);cache=root/'compiled-cache';cache.mkdir()

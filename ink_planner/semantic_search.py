@@ -9,6 +9,7 @@ import hashlib
 import heapq
 import itertools
 import json
+import sys
 import time
 import subprocess
 import tempfile
@@ -1081,6 +1082,7 @@ def main():
     if hashlib.sha256(compiler.read_bytes()).hexdigest() != original_hash: raise ValueError('compiler changed during search')
     if cache_key:
         if plan_cache.fingerprint(compiler,args.core,snapshot,args.cost_model,args.budget,args.rounds,args.cache_context,search_options)!=cache_key:raise ValueError('compilation inputs changed during search')
-        plan_cache.save(args.cache_dir,cache_key,json.dumps(dict(schema=1,key=cache_key,source_snapshot=source_snapshot,package=package),separators=(',',':')).encode()+b'\n')
+        stored=plan_cache.save(args.cache_dir,cache_key,json.dumps(dict(schema=1,key=cache_key,source_snapshot=source_snapshot,package=package),separators=(',',':')).encode()+b'\n')
+        if stored is False:print('warning: optional semantic-search cache maintenance unavailable; checked output retained',file=sys.stderr)
     print(json.dumps(dict(compiler_sha256=original_hash, database=dict(snapshot_sha256=__import__('ink_knowledge').identity(package['knowledge']['snapshot']),source_snapshot_sha256=original_snapshot_id,entries=len(roots),loaded_objects=len(discovery),producers=producer_receipts), cost_model=cost_model_receipt, **receipt)))
 if __name__ == '__main__': main()

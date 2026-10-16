@@ -33,14 +33,29 @@ def load(directory, key):
 
 def save(directory, key, raw):
     if len(raw)>MAX_BYTES:raise ValueError('plan cache byte limit')
-    directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
-    fd,tmp=tempfile.mkstemp(prefix='.ink-plan-',dir=directory)
+    return write_hint(directory,key,raw,256,prefix='.ink-plan-')
+
+
+def write_hint(directory,key,raw,keep,*,prefix='.ink-cache-'):
+    """Best-effort atomic hint storage; authoritative output is separate.
+
+    Return False on storage/eviction failure. Genuine serialization and other
+    programming errors remain errors. A cached packet still requires replay.
+    """
+    directory=Path(directory)
     try:
-        with os.fdopen(fd,'wb') as file:file.write(raw)
-        os.replace(tmp,directory/(key+'.json'))
-    finally:
-        if Path(tmp).exists():Path(tmp).unlink()
-    prune(directory,256)
+        directory.mkdir(parents=True,exist_ok=True)
+        fd,tmp=tempfile.mkstemp(prefix=prefix,dir=directory)
+        try:
+            with os.fdopen(fd,'wb') as file:file.write(raw)
+            os.replace(tmp,directory/(key+'.json'))
+        finally:
+            try:os.unlink(tmp)
+            except FileNotFoundError:pass
+        prune(directory,keep)
+    except OSError:
+        return False
+    return True
 
 
 def prune(directory,keep):
