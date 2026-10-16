@@ -563,3 +563,12 @@ releases buffered proposals round-robin between recipe families and FIFO within
 each family. An early fast producer cannot consume the entire per-state allowance
 before a later family's second or third composed prefix. The byte bound, global
 search limits and complete-chain proof checks remain unchanged.
+
+Structural search prices lazy choices by their maximum arm work when the
+database enables that policy. Declared zero-cardinality predicates scope an
+empty extent to the corresponding arm, including through hygienically shifted
+lexical binders. Receiver and initializer work still contributes, unrelated
+receivers retain their prior estimate, and at most 64 local extent hypotheses
+are retained. These are bounded search prices, never checker premises or
+measured profitability. Schema2 component models keep their independent policy.
+The ordinary evidence gate still retains the baseline without comparable costs.

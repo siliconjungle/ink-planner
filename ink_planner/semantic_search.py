@@ -134,20 +134,22 @@ def replace(t, path, new):
     return set_child(t, path[0], replace(children(t)[path[0]], path[1:], new))
 
 
-def estimated_list_length(t, fallback):
+def estimated_list_length(t, fallback, cardinalities=()):
     """Conservative structural cardinality for an optional search hypothesis."""
+    for receiver, length in reversed(cardinalities):
+        if t == receiver: return length
     n = t['node']
     if n == 'Nil': return 0
     if isinstance(n, dict):
-        if 'Cons' in n: return 1 + estimated_list_length(n['Cons'][1], fallback)
+        if 'Cons' in n: return 1 + estimated_list_length(n['Cons'][1], fallback, cardinalities)
         if 'Op' in n:
             name, args = n['Op']
             if name == 'method:concat' and len(args) == 2:
-                return sum(estimated_list_length(a, fallback) for a in args)
+                return sum(estimated_list_length(a, fallback, cardinalities) for a in args)
             if name == 'method:zip' and len(args) >= 2:
-                return min(estimated_list_length(a, fallback) for a in args[:2])
+                return min(estimated_list_length(a, fallback, cardinalities) for a in args[:2])
             if name in ('method:map', 'method:filter', 'call:buffer', 'method:freeze') and args:
-                return estimated_list_length(args[0], fallback)
+                return estimated_list_length(args[0], fallback, cardinalities)
     return fallback
 
 
@@ -161,8 +163,48 @@ def cost(t, operation_costs=None):
         operation_costs = dict(structural_prices(), **operation_costs)
     return _cost(t,operation_costs)
 
-def _cost(t,operation_costs):
-    n = t['node']; costs = [_cost(x, operation_costs) for x in children(t)]
+def branch_cardinalities(condition, truth, prices, cardinalities):
+    """Database-controlled price hypotheses, never exported proof premises.
+
+    Only the selected arm receives a zero extent. Shift these immutable source
+    terms on entering a binder, so Bound(0) cannot alias an inner parameter.
+    Exhaustion retains the original structural estimate.
+    """
+    if len(cardinalities) >= 64: return cardinalities
+    node = condition['node']
+    if not isinstance(node,dict) or 'Op' not in node: return cardinalities
+    comparison, args = node['Op']
+    if len(args) != 2: return cardinalities
+    for probe, constant in (args, reversed(args)):
+        if constant.get('node') != {'Word':0}: continue
+        pn = probe['node']
+        if not isinstance(pn,dict) or 'Op' not in pn: continue
+        name, values = pn['Op']
+        rule = 'estimate:empty_branch_'+('true:' if truth else 'false:')+comparison+':'+name
+        if prices.get(rule) != 1 or len(values) != 1: continue
+        sort = values[0].get('sort')
+        carrier = sort.get('Value') if isinstance(sort,dict) else None
+        if isinstance(carrier,dict) and 'List' in carrier:
+            return (*cardinalities, (values[0],0))
+    return cardinalities
+
+
+def _cost(t,operation_costs,cardinalities=()):
+    n = t['node']
+    if isinstance(n,dict) and 'Lambda' in n and cardinalities:
+        cardinalities = tuple((shift(receiver,1),length) for receiver,length in cardinalities)
+    if isinstance(n,dict) and 'Op' in n:
+        name,args = n['Op']
+        if name == 'call:choose' and len(args) == 3 and operation_costs.get('estimate:branch_max:'+name) == 1:
+            prefix = _cost(args[0],operation_costs,cardinalities)
+            literal = args[0]['node']
+            if isinstance(literal,dict) and type(literal.get('Bool')) is bool:
+                work = _cost(args[1 if literal['Bool'] else 2],operation_costs,cardinalities)
+            else:
+                work = max(_cost(arm,operation_costs,branch_cardinalities(args[0],truth,operation_costs,cardinalities))
+                           for truth,arm in [(True,args[1]),(False,args[2])])
+            return operation_costs.get(name,operation_costs.get('estimate:scalar',0)) + prefix + work
+    costs = [_cost(x, operation_costs,cardinalities) for x in children(t)]
     if isinstance(n, dict) and 'Op' in n:
         name, args = n['Op']
         # Collection callbacks repeat work across representation alternatives.
@@ -175,7 +217,7 @@ def _cost(t,operation_costs):
             first = args[0]['sort'].get('Value')
             if isinstance(first, dict) and any(operation_costs.get('estimate:callback_carrier:'+carrier, 0) for carrier in first) and 'Arrow' in args[-1]['sort']:
                 if (operation_costs or {}).get('estimate:list_cardinality', 0):
-                    repetitions = estimated_list_length(args[0], repetitions)
+                    repetitions = estimated_list_length(args[0], repetitions, cardinalities)
                 costs[-1] *= repetitions
         # A statically known lambda application reifies to a local binding,
         # not a dynamic callback invocation. The optional binding price still
