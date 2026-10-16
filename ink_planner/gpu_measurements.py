@@ -30,6 +30,15 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _stable_browser_context(reports):
+    if not reports or any(not isinstance(r.get('browserVersion'), str) or not r['browserVersion'] for r in reports):
+        raise ValueError('observed browser version required')
+    context = dict(device=reports[0]['device'], browserVersion=reports[0]['browserVersion'])
+    if any(dict(device=r['device'], browserVersion=r['browserVersion']) != context for r in reports):
+        raise ValueError('browser/device identity changed across fresh launches or workload splits')
+    return context
+
+
 def acquire(compiler, source, plans, training, holdout, browser, scratch, *, processes=3, timeout=900):
     if type(processes) is not int or not 1 <= processes <= 8:
         raise ValueError('1..8 fresh browser processes required')
@@ -124,12 +133,10 @@ def acquire(compiler, source, plans, training, holdout, browser, scratch, *, pro
             if report['request_sha256'] != digest(request) or report['input_fingerprints'] != fingerprints[name]:
                 raise ValueError('device response/request/input binding mismatch')
             reports.append(report)
-        if any(report['device'] != reports[0]['device'] for report in reports):
-            raise ValueError('device identity changed across fresh launches')
+        _stable_browser_context(reports)
         receipts[name] = dict(combine(reports, artifacts, fingerprints=True), device=reports[0]['device'],
                               reports=reports, profile=specs[name]['profile'], peak_rss_bytes=None)
-    if receipts['training']['device'] != receipts['holdout']['device']:
-        raise ValueError('device identity changed across training/holdout')
+    _stable_browser_context([report for receipt in receipts.values() for report in receipt['reports']])
     if any(digest(p) != pins[str(p)] for p in tracked):
         raise ValueError('source, compiler, plans, browser or adapter changed during acquisition')
     if context['node'] != execution_context(SimpleNamespace(target='javascript', memory_bytes=512000000)) or context['rust'] != execution_context(SimpleNamespace(target='rust')):

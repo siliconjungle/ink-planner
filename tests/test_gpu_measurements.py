@@ -1,4 +1,5 @@
 import json
+import copy
 import os
 from pathlib import Path
 import shutil
@@ -6,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
-from ink_planner.gpu_measurements import acquire, RUNNER
+from ink_planner.gpu_measurements import acquire, RUNNER, _stable_browser_context
 from ink_knowledge import Store
 from ink_planner.representation_selection import rank
 
@@ -31,6 +32,17 @@ class DeviceMeasurementControls(unittest.TestCase):
         script = Path(__file__).with_name('browser-host-controls.mjs')
         result = subprocess.run(['node', str(script)], capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_browser_updates_and_device_changes_cannot_share_one_cost_context(self):
+        observed = dict(device=dict(vendor='Apple', architecture='metal-3'), browserVersion='Chrome/one')
+        self.assertEqual(_stable_browser_context([observed, copy.deepcopy(observed)]), observed)
+        for change in [dict(browserVersion='Chrome/two'), dict(device=dict(vendor='different'))]:
+            changed = dict(observed, **change)
+            with self.assertRaisesRegex(ValueError, 'identity changed'):
+                _stable_browser_context([observed, changed])
+        for missing in [[], [dict(device=observed['device'])], [dict(observed, browserVersion='')]]:
+            with self.assertRaisesRegex(ValueError, 'version required'):
+                _stable_browser_context(missing)
 
     def test_bounds_decline_before_creating_any_experiment(self):
         with tempfile.TemporaryDirectory()as tmp:

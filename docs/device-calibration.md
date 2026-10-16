@@ -23,6 +23,8 @@ in release mode with two jobs, outside timing. Build durations, source, lockfile
 Wasm/artifact hashes and known Node/Rust controls are retained. Three fresh
 browser processes per dataset are the default. Source, plans, compiler, browser,
 adapter code, artifacts and execution controls are rechecked before success.
+Every fresh process and both workload splits must expose the same observed
+browser version and device context; an update or device change declines acquisition.
 Do not edit those inputs during acquisition.
 
 The original evaluator supplies every expected result and normalized typed input
