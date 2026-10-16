@@ -92,9 +92,45 @@ def clone_knowledge(source, destination):
             raise ValueError('knowledge publication changed during corpus isolation')
     index = source / 'index.sqlite'
     if index.exists():
-        with closing(sqlite3.connect(index.as_uri() + '?mode=ro', uri=True)) as original:
-            with closing(sqlite3.connect(destination / 'index.sqlite')) as private, private:
-                original.backup(private)
+        copy_sqlite_snapshot(index, destination / 'index.sqlite')
+
+
+def _clone_file(source, destination):
+    """Optional filesystem COW copy; never a hard link to mutable SQLite."""
+    if sys.platform != 'darwin':
+        return False
+    import ctypes
+    api = ctypes.CDLL(None, use_errno=True)
+    clone = getattr(api, 'clonefile', None)
+    if clone is None:
+        return False
+    clone.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+    clone.restype = ctypes.c_int
+    return clone(os.fsencode(source), os.fsencode(destination), 0) == 0
+
+
+def copy_sqlite_snapshot(source, destination):
+    """Private consistent cache snapshot, with online backup as the fallback.
+
+    A rollback-journal reader holds the shared lock until this connection closes,
+    so a writer cannot alter the main database during clonefile. WAL readers do
+    not provide that guarantee: use SQLite backup to include their selected WAL
+    frames. Neither a cache copy nor its metadata grants proof authority.
+    """
+    source, destination = Path(source).resolve(), Path(destination)
+    if destination.exists():
+        raise ValueError('SQLite snapshot destination already exists')
+    with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as original:
+        original.execute('BEGIN')
+        original.execute('SELECT name FROM sqlite_master LIMIT 1').fetchall()
+        journal = original.execute('PRAGMA journal_mode').fetchone()[0].lower()
+        if journal in {'delete', 'truncate', 'persist'} and _clone_file(source, destination):
+            return
+        # A failed optional clone may leave a destination on unusual filesystems.
+        # This path belongs to this attempted copy and existed nowhere before it.
+        destination.unlink(missing_ok=True)
+        with closing(sqlite3.connect(destination)) as private, private:
+            original.backup(private)
 
 
 def load_manifest(path, content=None):

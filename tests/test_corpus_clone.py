@@ -101,7 +101,8 @@ class CorpusClone(unittest.TestCase):
                 connections.append(connection)
                 return connection
             private = Path(directory) / 'private'
-            with patch('ink_planner.corpus.sqlite3.connect', side_effect=track):
+            with patch('ink_planner.corpus.sqlite3.connect', side_effect=track), \
+                    patch('ink_planner.corpus._clone_file', return_value=False):
                 clone_knowledge(root, private)
             self.assertEqual(len(connections), 2)
             for connection in connections:
@@ -125,7 +126,8 @@ class CorpusClone(unittest.TestCase):
                 connection = original(*args, factory=FailedBackup, **kwargs)
                 connections.append(connection)
                 return connection
-            with patch('ink_planner.corpus.sqlite3.connect', side_effect=track):
+            with patch('ink_planner.corpus.sqlite3.connect', side_effect=track), \
+                    patch('ink_planner.corpus._clone_file', return_value=False):
                 with self.assertRaisesRegex(sqlite3.OperationalError, 'injected backup failure'):
                     clone_knowledge(root, Path(directory) / 'private')
             self.assertEqual(len(connections), 2)

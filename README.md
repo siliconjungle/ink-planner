@@ -500,6 +500,14 @@ manifest identities alongside its execution environment. Resume and report-only
 operations require the same recorded context. Older reports without an environment
 record remain historical evidence; they cannot be resumed into the new format.
 
+Private corpus caches can use macOS filesystem copy-on-write snapshots. An
+established rollback-journal read transaction holds the source database stable
+while it is cloned into an independent file. WAL mode and unsupported filesystems
+retain SQLite's online backup, including committed frames outside the main file.
+Canonical objects/publication still authenticate independently; copying a cache
+does not cache a proof verdict. This avoids duplicating the whole local index
+merely to start each worker, while preserving private writes and lock cleanup.
+
 Environment capture runs in a fresh interpreter using the same environment
 construction as corpus workers. It records Python/ABI/SQLite identity, selected
 import locations and actual files for the proof and optional discovery dependencies
