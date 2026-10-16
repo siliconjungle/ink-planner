@@ -502,8 +502,11 @@ record remain historical evidence; they cannot be resumed into the new format.
 
 Private corpus caches can use macOS filesystem copy-on-write snapshots. An
 established rollback-journal read transaction holds the source database stable
-while it is cloned into an independent file. WAL mode and unsupported filesystems
-retain SQLite's online backup, including committed frames outside the main file.
+while it is cloned into an independent file. A detected fresh-inode index rebuild
+before or during cloning discards that image and backs up the original reader's
+snapshot. WAL mode and unsupported filesystems retain SQLite's online backup,
+including committed frames outside the main file. The reader uses a private
+SQLite pager even if a caller enabled shared-cache connections elsewhere.
 Canonical objects/publication still authenticate independently; copying a cache
 does not cache a proof verdict. This avoids duplicating the whole local index
 merely to start each worker, while preserving private writes and lock cleanup.

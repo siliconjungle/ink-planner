@@ -120,12 +120,23 @@ def copy_sqlite_snapshot(source, destination):
     source, destination = Path(source).resolve(), Path(destination)
     if destination.exists():
         raise ValueError('SQLite snapshot destination already exists')
-    with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as original:
+    initial = source.stat()
+    def same_file():
+        current = source.stat()
+        return (current.st_dev, current.st_ino) == (initial.st_dev, initial.st_ino)
+    with closing(sqlite3.connect(source.as_uri() + '?mode=ro&cache=private', uri=True)) as original:
         original.execute('BEGIN')
         original.execute('SELECT name FROM sqlite_master LIMIT 1').fetchall()
         journal = original.execute('PRAGMA journal_mode').fetchone()[0].lower()
-        if journal in {'delete', 'truncate', 'persist'} and _clone_file(source, destination):
-            return
+        try:
+            # Rebuilds atomically publish fresh inodes outside SQLite locking.
+            # A replacement before/during cloning discards the optional image;
+            # the original connection still supplies its consistent backup.
+            if (journal in {'delete', 'truncate', 'persist'} and same_file()
+                    and _clone_file(source, destination) and same_file()):
+                return
+        except OSError:
+            pass
         # A failed optional clone may leave a destination on unusual filesystems.
         # This path belongs to this attempted copy and existed nowhere before it.
         destination.unlink(missing_ok=True)
