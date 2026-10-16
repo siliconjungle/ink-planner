@@ -11,6 +11,9 @@ def run_observed(command,*,timeout):
     adapter storage. It is a conservative common bound, not per-plan allocation.
     Unknown OS units decline rather than supplying missing or guessed evidence.
     File-backed output avoids a full pipe blocking the child before wait4.
+    On fork/exec systems the launch peak can include the observer's resident
+    pages before exec. It remains conservative; do not subtract another child's
+    peak or interpret it as the generated application's isolated heap.
     """
     if not hasattr(os,'wait4')or sys.platform not in ('darwin','linux'):
         raise ValueError('native peak RSS acquisition requires Darwin or Linux wait4')

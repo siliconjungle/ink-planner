@@ -23,10 +23,22 @@ class NativeProcessMeasurements(unittest.TestCase):
         self.assertGreater(peak,0)
 
     def test_peak_belongs_to_this_child_not_previous_children(self):
-        large,large_peak=run_observed([sys.executable,'-c','x=bytearray(96*1024*1024);print(len(x))'],timeout=15)
-        small,small_peak=run_observed([sys.executable,'-c','print(1)'],timeout=15)
-        self.assertEqual(large.returncode,0,large.stderr)
-        self.assertEqual(small.returncode,0,small.stderr)
+        # Start with a fresh observer. On Linux a fork/exec child's peak can
+        # include the observer's resident pages before exec. The full test
+        # process may already exceed this allocation; that conservative launch
+        # peak is not evidence that wait4 returned a previous child's usage.
+        script='''import json,sys
+from ink_planner.native_measurements import run_observed
+large,large_peak=run_observed([sys.executable,'-c','x=bytearray(96*1024*1024);print(len(x))'],timeout=15)
+small,small_peak=run_observed([sys.executable,'-c','print(1)'],timeout=15)
+assert large.returncode==0,large.stderr
+assert small.returncode==0,small.stderr
+print(json.dumps([large_peak,small_peak]))
+'''
+        env=dict(os.environ,PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+        result=subprocess.run([sys.executable,'-c',script],env=env,capture_output=True,text=True,timeout=40)
+        self.assertEqual(result.returncode,0,result.stderr)
+        large_peak,small_peak=json.loads(result.stdout)
         self.assertGreaterEqual(large_peak,96*1024*1024)
         # An accumulated RUSAGE_CHILDREN maximum would return the large peak
         # again, falsely attaching that allocation to this later small child.
