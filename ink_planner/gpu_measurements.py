@@ -110,10 +110,15 @@ def acquire(compiler, source, plans, training, holdout, browser, scratch, *, pro
     for name in ['training', 'holdout']:
         reports = []
         for process in range(processes):
+            # Reserve normal owned-browser shutdown outside the whole-host budget.
+            # Do not let the parent timeout kill Node before it can close Chrome.
+            remaining = deadline - time.monotonic()
+            if remaining <= 35:
+                raise ValueError('device acquisition lacks browser cleanup time budget')
             request = scratch/f'{name}-{process}.request.json'
             request.write_text(json.dumps(dict(schema=1, artifacts=artifacts, phases=transfer(phases[name]),
                 measurement=dict(rounds=11, minimum_batch_ms=5, maximum_calls_per_sample=256), process_index=process,
-                timeout_ms=min(600000, max(1, int((deadline-time.monotonic())*1000)))), allow_nan=False))
+                timeout_ms=min(600000, max(1, int((remaining-35)*1000)))), allow_nan=False))
             output = run(node_command(SimpleNamespace(memory_bytes=512000000), RUNNER, browser, request, digest(request)), f'{name}-{process}')
             report = json.loads(output)
             if report['request_sha256'] != digest(request) or report['input_fingerprints'] != fingerprints[name]:

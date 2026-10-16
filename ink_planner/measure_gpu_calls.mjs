@@ -17,7 +17,7 @@ const helpers={
 const report=await browserHost(browser,artifacts.map(a=>a.path),helpers,async host=>{
  const result=await host.evaluate(`(${measure.toString()})(${JSON.stringify(request)},${JSON.stringify(host.base)})`,request.timeout_ms??120000);
  return {...result,browserVersion:host.browserVersion,browser_startup_ns:host.setup_ns};
-});
+},{timeout_ms:request.timeout_ms??120000});
 console.log(JSON.stringify({...report,request_sha256:sealed,memory_scope:'Whole-browser/renderer/GPU peak memory is unknown; no zero or per-buffer estimate is substituted.',peak_rss_bytes:null}));
 
 async function measure(request,base) {

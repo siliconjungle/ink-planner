@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -24,6 +25,12 @@ class DeviceMeasurementControls(unittest.TestCase):
             result=subprocess.run(['node',str(RUNNER),'/not-a-browser',str(request),'0'*64],capture_output=True,text=True,timeout=10)
             self.assertNotEqual(result.returncode,0)
             self.assertIn('request hash mismatch',result.stderr)
+
+    @unittest.skipUnless(shutil.which('node') and os.name == 'posix', 'Node and POSIX required')
+    def test_browser_host_budget_and_failure_cleanup(self):
+        script = Path(__file__).with_name('browser-host-controls.mjs')
+        result = subprocess.run(['node', str(script)], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_bounds_decline_before_creating_any_experiment(self):
         with tempfile.TemporaryDirectory()as tmp:

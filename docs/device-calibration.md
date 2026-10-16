@@ -40,7 +40,7 @@ are cost provenance, not a unique device attestation. Independent hooks on this
 device count actual compute dispatches, submissions and readbacks; reported
 runtime counters must agree on dispatches. CPU fallback, fake GPU labels and
 zero-device-work calls decline. The packed supplied-device ABI is required;
-scalar/recursive/state/encoded-call adapters are outside this capability.
+legacy scalar-pipeline/recursive/state/encoded-call adapters are outside this capability.
 
 Samples measure full warm async calls: input capture/upload, GPU execution,
 readback, result decoding, observation hooks and complete consumption. Browser
@@ -63,3 +63,10 @@ A terminal receipt declares the completed CPU build target safe to retire while
 keeping selected artifacts, inputs/oracles, raw process samples and reproduction
 sources. Observe experiment storage policy, exact Cargo source preflight and
 existing timed compiler flags. Leave live workers and shared inputs intact.
+
+The browser host applies one bounded budget across startup and the action. The
+parent reserves 35 seconds outside that budget for normal shutdown of its owned
+Chrome process. A timeout closes only the browser reached through its fresh
+profile, observes process exit, then removes that profile. If shutdown cannot be
+observed, the profile remains protected and the acquisition fails with its PID
+and profile path. No unrelated workers or browser sessions are terminated.
