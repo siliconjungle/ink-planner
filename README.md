@@ -572,3 +572,13 @@ receivers retain their prior estimate, and at most 64 local extent hypotheses
 are retained. These are bounded search prices, never checker premises or
 measured profitability. Schema2 component models keep their independent policy.
 The ordinary evidence gate still retains the baseline without comparable costs.
+
+### Explicit GPU calibration
+
+The [device calibration companion](docs/device-calibration.md) replays exact plans,
+checks complete outputs against the original evaluator, and measures full async
+calls on one supplied hardware device with independently observed dispatches and
+readbacks. Fresh processes and disjoint normalized holdout inputs are mandatory
+for its default comparison. It exports canonical timing-only observation proposals;
+whole-browser peak memory remains unknown. This does not enable automatic GPU
+selection, transfer CPU costs, or change the runtime baseline.

@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {same,normalized,consume} from '../ink_planner/gpu_measurement_values.mjs';
+import {openMeasurementDevice} from '../ink_planner/gpu_device.mjs';
+import {assetServer} from '../ink_planner/browser_host.mjs';
+const u64={kind:'u64'},f32={kind:'f32'};
+for(const n of [0n,1n,9007199254740991n,9007199254740992n,18446744073709551615n]){assert.equal(normalized(n,u64,true),n);assert.equal(normalized(n<=9007199254740991n?Number(n):n.toString(),u64),n);}
+assert.equal(normalized(3,u64,true),3n);
+for(const n of [-1n,18446744073709551616n,1n,NaN,'0'])assert.throws(()=>normalized(n,u64));
+assert.throws(()=>normalized(9007199254740992,u64,true),/inexact/);
+assert.notEqual(consume(9007199254740992n),consume(9007199254740993n));
+assert(!same(normalized('9007199254740992',u64),normalized('9007199254740993',u64)));
+assert(!same(normalized(0,f32),normalized(-0,f32)));
+for(const bits of [0x7fc00001,0xffc00001,0x80000000,1])assert.deepEqual(normalized({F32Bits:bits},f32),{F32Bits:bits});
+for(const bits of [-1,4294967296,1.5,'1'])assert.throws(()=>normalized({F32Bits:bits},f32));
+assert.throws(()=>normalized(NaN,f32));
+assert.throws(()=>normalized([1,2],{kind:'vector',size:1,element:{kind:'u32'}}));
+assert.throws(()=>normalized({x:1,extra:2},{kind:'record',fields:[{name:'x',type:{kind:'u32'}}]}));
+assert(!same([1],{'0':1}));assert(!same({a:1},{b:1}));assert(same({b:[2],a:1},{a:1,b:[2]}));
+assert.throws(()=>normalized(4294967296,{kind:'u32'}));assert.throws(()=>normalized(2147483648,{kind:'i32'}));
+let requested,real={dispatches:0,submissions:0,reads:0};
+const queue={submit(){assert.equal(this,queue);real.submissions++;}};
+const device={queue,features:new Set(),lost:new Promise(()=>{}),createCommandEncoder(){
+ assert.equal(this,device);return {beginComputePass(){return {dispatchWorkgroups(){real.dispatches++;},dispatchWorkgroupsIndirect(){real.dispatches++;}};}};
+},createBuffer(){return {async mapAsync(mode){if(mode&1)real.reads++;}};}};
+const limits=Object.create({maxStorageBufferBindingSize:536870912,maxBufferSize:536870912,maxStorageBuffersPerShaderStage:8});
+Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{async requestAdapter(options){assert.equal(options.powerPreference,'high-performance');return {info:{vendor:'test',architecture:'test',device:'test',description:'test',isFallbackAdapter:false},features:new Set(),limits,async requestDevice(options){requested=options;return device;}};}}}});
+globalThis.GPUMapMode={READ:1};
+const opened=await openMeasurementDevice();assert.equal(opened.device,device);assert.equal(requested.requiredLimits.maxBufferSize,268435456);
+const pass=device.createCommandEncoder().beginComputePass();pass.dispatchWorkgroups(1);pass.dispatchWorkgroupsIndirect({},0);queue.submit([]);await device.createBuffer().mapAsync(1);await device.createBuffer().mapAsync(2);
+assert.deepEqual(opened.actual,{dispatches:2,submissions:1,readbacks:1});assert.deepEqual(real,{dispatches:2,submissions:1,reads:1});
+const root=await fs.mkdtemp(path.join(os.tmpdir(),'ink-asset-test-')),inside=path.join(root,'bundle');await fs.mkdir(inside);await fs.writeFile(path.join(inside,'ok.json'),'{}');await fs.writeFile(path.join(root,'outside.json'),'secret');await fs.symlink(path.join(root,'outside.json'),path.join(inside,'escape.json'));await fs.writeFile(path.join(inside,'source.rs'),'private');
+const server=assetServer([inside]);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+try{const base='http://127.0.0.1:'+server.address().port;
+ assert.equal((await fetch(base+'/artifact/0/ok.json')).status,200);
+ for(const name of ['escape.json','%2e%2e%2foutside.json','source.rs'])assert.equal((await fetch(base+'/artifact/0/'+name)).status,404);
+ assert.equal((await fetch(base+'/artifact/1/ok.json')).status,404);
+}finally{await new Promise(resolve=>server.close(resolve));await fs.rm(root,{recursive:true,force:true});}
+console.log('PASS exact U64/F32/vector/record outputs, full consumption, independent provided-device counters, asset traversal/symlink boundaries');
