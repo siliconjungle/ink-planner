@@ -226,7 +226,12 @@ def _cost(t,operation_costs,cardinalities=()):
         binding = (operation_costs or {}).get('estimate:let_binding')
         if binding is not None and name == 'apply' and len(args) == 2:
             if isinstance(args[0].get('node'), dict) and 'Lambda' in args[0]['node']:
-                return binding + sum(costs)
+                # This literal Lambda is consumed as a local binding, not
+                # materialised as a callback value. Its body and argument
+                # still execute once; only the wrapper's scalar node price
+                # disappears. Counting it inside a repeated reducer can
+                # otherwise hide the saving of an admitted map/fold fusion.
+                return binding + sum(costs) - operation_costs.get('estimate:scalar',0)
         if operation_costs is not None and name in operation_costs:
             return operation_costs[name] + sum(costs)
         if name == 'call:repeat':
