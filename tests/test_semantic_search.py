@@ -281,11 +281,10 @@ class PremiseFairness(unittest.TestCase):
 
 
 
-from ink_planner.semantic_search import cost
-from producers.semantic_laws import value,var,bound,lam,op,binary
-
 class ImmediateBindingPrices(unittest.TestCase):
  def test_literal_application_prices_body_and_argument_without_callback_wrapper(self):
+  from ink_planner.semantic_search import cost
+  from producers.semantic_laws import value,var,bound,lam,op,binary
   s=value('U32');argument=binary('*',var(s,'x'),var(s,'k'))
   body=binary('+',bound(s,0),var(s,'offset'))
   applied=op(s,'apply',lam(s,body),argument)
@@ -296,6 +295,8 @@ class ImmediateBindingPrices(unittest.TestCase):
   self.assertEqual(cost(unused),cost(var(s,'constant'))+cost(argument))
 
  def test_ordered_map_fold_fusion_is_visible_with_literal_callbacks(self):
+  from ink_planner.semantic_search import cost
+  from producers.semantic_laws import value,var,bound,lam,op,binary
   from ink_knowledge.law_templates import substitute_types
   from ink_planner.semantic_search import substitute
   from producers.pipeline_templates import templates
